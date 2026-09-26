@@ -1,0 +1,5 @@
+engines:
+  - name: kv-engine-1
+    address: localhost:50051
+  - name: kv-engine-2
+    address: localhost:50052
