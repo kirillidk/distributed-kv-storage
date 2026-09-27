@@ -26,7 +26,7 @@ type StorageEntry struct {
 
 type MemoryStorage struct {
 	values     map[string]StorageEntry
-	lock       *sync.RWMutex
+	lock       sync.RWMutex
 	timeSource TimeSource
 }
 
@@ -65,6 +65,6 @@ func (m *MemoryStorage) Get(key string) (string, error) {
 	}
 }
 
-func CreateMemoryStorage() *MemoryStorage {
-	return &MemoryStorage{make(map[string]StorageEntry), &sync.RWMutex{}, SystemTimeSource{}}
+func CreateMemoryStorage() Storage {
+	return &MemoryStorage{values: make(map[string]StorageEntry), timeSource: SystemTimeSource{}}
 }

@@ -10,7 +10,7 @@ import (
 
 func TestKVStorage(t *testing.T) {
 	time := &TestTimeSource{}
-	st := MemoryStorage{make(map[string]StorageEntry), &sync.RWMutex{}, time}
+	st := MemoryStorage{values: make(map[string]StorageEntry), timeSource: time}
 
 	// empty key
 	err := st.Set("", "asdf", 0)
