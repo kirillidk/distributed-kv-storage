@@ -63,16 +63,17 @@ func (s *server) RunServer(port int) {
 	grpc := grpc.NewServer()
 	kvv1.RegisterKVServiceServer(grpc, s)
 	healthcheck := health.NewServer()
+	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
 	healthgrpc.RegisterHealthServer(grpc, healthcheck)
 
 	serverStopped := make(chan struct{}, 1)
 	go func() {
-		healthcheck.SetServingStatus("kv-engine", healthgrpc.HealthCheckResponse_SERVING)
+		healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 		log.Println("state -> SERVING")
 
 		<-signalChan
 		log.Println("Shutting down...")
-		healthcheck.SetServingStatus("kv-engine", healthgrpc.HealthCheckResponse_NOT_SERVING)
+		healthcheck.Shutdown()
 		timer := time.AfterFunc(10*time.Second, func() {
 			log.Println("Server couldn't stop gracefully in time. Doing force stop.")
 			grpc.Stop()
