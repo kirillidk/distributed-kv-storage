@@ -229,7 +229,8 @@ func TestRunStopsEngineGracefullyAndLogsOutput(t *testing.T) {
 	logs := &lockedBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	node := testNode("wait")
-	node.Engine.ShutdownTimeout = Duration{time.Second}
+	// A race-instrumented subprocess waits before exiting to flush race reports.
+	node.Engine.ShutdownTimeout = Duration{3 * time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, node, logger) }()
