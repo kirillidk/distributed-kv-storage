@@ -13,14 +13,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Manifest describes every shard in the cluster. The whole manifest is
-// validated before a local shard is selected.
+// Manifest describes every node in the cluster. The whole manifest is
+// validated before a local node is selected.
 type Manifest struct {
-	Version int           `yaml:"version"`
-	Shards  []ShardConfig `yaml:"shards"`
+	Nodes []NodeConfig `yaml:"nodes"`
 }
 
-type ShardConfig struct {
+type NodeConfig struct {
 	ID          string       `yaml:"id"`
 	ReplAddress string       `yaml:"repl_address"`
 	Engine      EngineConfig `yaml:"engine"`
@@ -79,36 +78,33 @@ func LoadManifest(path string) (*Manifest, error) {
 }
 
 func (m *Manifest) Validate() error {
-	if m.Version != 1 {
-		return fmt.Errorf("version must be 1 (got %d)", m.Version)
-	}
-	if len(m.Shards) == 0 {
-		return errors.New("shards must contain at least one node")
+	if len(m.Nodes) == 0 {
+		return errors.New("nodes must contain at least one node")
 	}
 
-	seen := make(map[string]int, len(m.Shards))
-	for i, shard := range m.Shards {
-		label := fmt.Sprintf("shards[%d]", i)
-		if strings.TrimSpace(shard.ID) == "" {
+	seen := make(map[string]int, len(m.Nodes))
+	for i, node := range m.Nodes {
+		label := fmt.Sprintf("nodes[%d]", i)
+		if strings.TrimSpace(node.ID) == "" {
 			return fmt.Errorf("%s.id is required", label)
 		}
-		if previous, exists := seen[shard.ID]; exists {
-			return fmt.Errorf("duplicate shard ID %q at shards[%d] and %s", shard.ID, previous, label)
+		if previous, exists := seen[node.ID]; exists {
+			return fmt.Errorf("duplicate node ID %q at nodes[%d] and %s", node.ID, previous, label)
 		}
-		seen[shard.ID] = i
-		if err := validateAddress(shard.ReplAddress); err != nil {
+		seen[node.ID] = i
+		if err := validateAddress(node.ReplAddress); err != nil {
 			return fmt.Errorf("%s.repl_address: %w", label, err)
 		}
-		if err := validateAddress(shard.Engine.Address); err != nil {
+		if err := validateAddress(node.Engine.Address); err != nil {
 			return fmt.Errorf("%s.engine.address: %w", label, err)
 		}
-		if len(shard.Engine.Command) == 0 || strings.TrimSpace(shard.Engine.Command[0]) == "" {
+		if len(node.Engine.Command) == 0 || strings.TrimSpace(node.Engine.Command[0]) == "" {
 			return fmt.Errorf("%s.engine.command must start with an executable", label)
 		}
-		if shard.Engine.RestartDelay.Duration <= 0 {
+		if node.Engine.RestartDelay.Duration <= 0 {
 			return fmt.Errorf("%s.engine.restart_delay must be positive", label)
 		}
-		if shard.Engine.ShutdownTimeout.Duration <= 0 {
+		if node.Engine.ShutdownTimeout.Duration <= 0 {
 			return fmt.Errorf("%s.engine.shutdown_timeout must be positive", label)
 		}
 	}
@@ -130,11 +126,11 @@ func validateAddress(address string) error {
 	return nil
 }
 
-func (m *Manifest) FindShard(id string) (*ShardConfig, error) {
-	for i := range m.Shards {
-		if m.Shards[i].ID == id {
-			return &m.Shards[i], nil
+func (m *Manifest) FindNode(id string) (*NodeConfig, error) {
+	for i := range m.Nodes {
+		if m.Nodes[i].ID == id {
+			return &m.Nodes[i], nil
 		}
 	}
-	return nil, fmt.Errorf("shard %q not found in manifest", id)
+	return nil, fmt.Errorf("node %q not found in manifest", id)
 }

@@ -25,12 +25,12 @@ func run(args []string, logger *slog.Logger) error {
 	flags := flag.NewFlagSet("repl", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	manifestPath := flags.String("manifest", "", "path to the cluster YAML manifest")
-	shardID := flags.String("shard-id", "", "ID of the local shard")
+	nodeID := flags.String("node-id", "", "ID of the local node")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *manifestPath == "" || *shardID == "" || flags.NArg() != 0 {
-		return errors.New("usage: repl --manifest PATH --shard-id ID")
+	if *manifestPath == "" || *nodeID == "" || flags.NArg() != 0 {
+		return errors.New("usage: repl --manifest PATH --node-id ID")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -40,17 +40,17 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	shard, err := manifest.FindShard(*shardID)
+	node, err := manifest.FindNode(*nodeID)
 	if err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	logger.Info("repl starting", "shard_id", shard.ID, "repl_address", shard.ReplAddress)
-	if err := repl.Run(ctx, *shard, logger); err != nil {
-		return fmt.Errorf("supervise shard %q: %w", shard.ID, err)
+	logger.Info("repl starting", "node_id", node.ID, "repl_address", node.ReplAddress)
+	if err := repl.Run(ctx, *node, logger); err != nil {
+		return fmt.Errorf("supervise node %q: %w", node.ID, err)
 	}
-	logger.Info("repl stopped", "shard_id", shard.ID)
+	logger.Info("repl stopped", "node_id", node.ID)
 	return nil
 }

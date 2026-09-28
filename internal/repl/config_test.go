@@ -8,13 +8,12 @@ import (
 	"time"
 )
 
-const validManifest = `version: 1
-shards:
-  - id: shard_0
+const validManifest = `nodes:
+  - id: node_0
     repl_address: 127.0.0.1:7001
     engine:
       address: 127.0.0.1:8001
-      command: [./bin/kv-engine, --listen, 127.0.0.1:8001]
+      command: [./bin/kv-engine, --port, "8001"]
       restart_delay: 1s
       shutdown_timeout: 5s
 `
@@ -28,23 +27,23 @@ func writeManifest(t *testing.T, content string) string {
 	return path
 }
 
-func TestLoadManifestAndFindShard(t *testing.T) {
+func TestLoadManifestAndFindNode(t *testing.T) {
 	manifest, err := LoadManifest(writeManifest(t, validManifest))
 	if err != nil {
 		t.Fatal(err)
 	}
-	shard, err := manifest.FindShard("shard_0")
+	node, err := manifest.FindNode("node_0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shard.Engine.RestartDelay.Duration != time.Second || shard.Engine.ShutdownTimeout.Duration != 5*time.Second {
-		t.Fatalf("unexpected engine durations: %+v", shard.Engine)
+	if node.Engine.RestartDelay.Duration != time.Second || node.Engine.ShutdownTimeout.Duration != 5*time.Second {
+		t.Fatalf("unexpected engine durations: %+v", node.Engine)
 	}
-	if len(shard.Engine.Command) != 3 || shard.Engine.Command[1] != "--listen" {
-		t.Fatalf("unexpected command: %v", shard.Engine.Command)
+	if len(node.Engine.Command) != 3 || node.Engine.Command[1] != "--port" || node.Engine.Command[2] != "8001" {
+		t.Fatalf("unexpected command: %v", node.Engine.Command)
 	}
-	if _, err := manifest.FindShard("missing"); err == nil || !strings.Contains(err.Error(), `shard "missing" not found`) {
-		t.Fatalf("expected missing shard error, got %v", err)
+	if _, err := manifest.FindNode("missing"); err == nil || !strings.Contains(err.Error(), `node "missing" not found`) {
+		t.Fatalf("expected missing node error, got %v", err)
 	}
 }
 
@@ -54,20 +53,21 @@ func TestLoadManifestErrors(t *testing.T) {
 		content string
 		want    string
 	}{
-		{"invalid YAML", "version: [", "parse manifest"},
-		{"duplicate ID", validManifest + `  - id: shard_0
+		{"invalid YAML", "nodes: [", "parse manifest"},
+		{"duplicate ID", validManifest + `  - id: node_0
     repl_address: 127.0.0.1:7002
     engine:
       address: 127.0.0.1:8002
       command: [kv-engine]
       restart_delay: 1s
       shutdown_timeout: 5s
-`, `duplicate shard ID "shard_0"`},
-		{"missing command", strings.Replace(validManifest, "command: [./bin/kv-engine, --listen, 127.0.0.1:8001]", "command: []", 1), "engine.command"},
+`, `duplicate node ID "node_0"`},
+		{"missing command", strings.Replace(validManifest, "command: [./bin/kv-engine, --port, \"8001\"]", "command: []", 1), "engine.command"},
 		{"invalid duration", strings.Replace(validManifest, "restart_delay: 1s", "restart_delay: soon", 1), "invalid duration"},
 		{"missing address", strings.Replace(validManifest, "address: 127.0.0.1:8001", "address: ''", 1), "engine.address"},
+		{"version field", "version: 1\n" + validManifest, "field version not found"},
 		{"unknown field", validManifest + "extra: true\n", "field extra not found"},
-		{"extra document", validManifest + "---\nversion: 1\n", "multiple YAML documents"},
+		{"extra document", validManifest + "---\nnodes: []\n", "multiple YAML documents"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

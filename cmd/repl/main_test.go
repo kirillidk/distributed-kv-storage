@@ -14,16 +14,15 @@ func TestRunRejectsInvalidArguments(t *testing.T) {
 	if err := run(nil, logger); err == nil || !strings.Contains(err.Error(), "usage:") {
 		t.Fatalf("expected usage error, got %v", err)
 	}
-	if err := run([]string{"--manifest", "missing.yaml", "--shard-id", "shard_0"}, logger); err == nil || !strings.Contains(err.Error(), "open manifest") {
+	if err := run([]string{"--manifest", "missing.yaml", "--node-id", "node_0"}, logger); err == nil || !strings.Contains(err.Error(), "open manifest") {
 		t.Fatalf("expected missing manifest error, got %v", err)
 	}
 }
 
-func TestRunRejectsUnknownShard(t *testing.T) {
+func TestRunRejectsUnknownNode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
-	data := `version: 1
-shards:
-  - id: shard_0
+	data := `nodes:
+  - id: node_0
     repl_address: 127.0.0.1:7001
     engine:
       address: 127.0.0.1:8001
@@ -35,7 +34,7 @@ shards:
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if err := run([]string{"--manifest", path, "--shard-id", "missing"}, logger); err == nil || !strings.Contains(err.Error(), `shard "missing" not found`) {
-		t.Fatalf("expected missing shard error, got %v", err)
+	if err := run([]string{"--manifest", path, "--node-id", "missing"}, logger); err == nil || !strings.Contains(err.Error(), `node "missing" not found`) {
+		t.Fatalf("expected missing node error, got %v", err)
 	}
 }

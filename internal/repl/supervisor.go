@@ -4,17 +4,89 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"sync"
 	"syscall"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run supervises local engine process until ctx is canceled.
-func Run(ctx context.Context, shard ShardConfig, logger *slog.Logger) error {
-	engine := shard.Engine
+// Run serves node health and supervises the local engine until ctx is canceled.
+func Run(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
+	listener, err := net.Listen("tcp", node.ReplAddress)
+	if err != nil {
+		return fmt.Errorf("listen on repl address %q: %w", node.ReplAddress, err)
+	}
+	return runOnListener(ctx, node, logger, listener)
+}
+
+func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) error {
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	server := grpc.NewServer()
+	healthpb.RegisterHealthServer(server, healthServer)
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+
+	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
+	supervisorDone := make(chan error, 1)
+	go func() { supervisorDone <- supervise(supervisorCtx, node, logger) }()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	logger.Info("repl health serving", "address", listener.Addr().String())
+
+	var runErr error
+	supervisorFinished := false
+	serverFinished := false
+	select {
+	case <-ctx.Done():
+	case runErr = <-supervisorDone:
+		supervisorFinished = true
+	case err := <-serveDone:
+		serverFinished = true
+		if ctx.Err() == nil {
+			if err == nil {
+				runErr = errors.New("repl health server stopped unexpectedly")
+			} else {
+				runErr = fmt.Errorf("serve repl health: %w", err)
+			}
+		}
+	}
+
+	healthServer.Shutdown()
+	stopSupervisor()
+	if !supervisorFinished {
+		if err := <-supervisorDone; runErr == nil {
+			runErr = err
+		}
+	}
+	gracefulDone := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(gracefulDone)
+	}()
+	select {
+	case <-gracefulDone:
+	case <-time.After(250 * time.Millisecond):
+		server.Stop()
+		<-gracefulDone
+	}
+	if !serverFinished {
+		if err := <-serveDone; err != nil && runErr == nil && ctx.Err() == nil {
+			runErr = fmt.Errorf("serve repl health: %w", err)
+		}
+	}
+	return runErr
+}
+
+func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
+	engine := node.Engine
 	for ctx.Err() == nil {
 		cmd := exec.Command(engine.Command[0], engine.Command[1:]...)
 		stdout := &engineLogWriter{logger: logger, stream: "stdout"}
