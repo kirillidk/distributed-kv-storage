@@ -30,6 +30,41 @@ Go import path:
 import kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 ```
 
+## RPC proxy
+
+`rpc-proxy` reads its engine endpoints from `manifest.yaml`, then forwards each
+`Set` or `Get` request to a randomly selected engine.
+
+Build the binary:
+
+```bash
+go build -o rpc-proxy ./cmd/rpc-proxy
+```
+
+Run it with an explicit manifest and listen address:
+
+```bash
+./rpc-proxy \
+  --manifest ./cluster.yaml \
+  --listen 127.0.0.1:9000
+```
+
+In PowerShell, use backticks for line continuation:
+
+```powershell
+.\rpc-proxy.exe `
+  --manifest .\cluster.yaml `
+  --listen 127.0.0.1:9000
+```
+
+The manifest format is:
+
+```yaml
+engines:
+  - name: kv-engine-1
+    address: localhost:50051
+```
+
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are
