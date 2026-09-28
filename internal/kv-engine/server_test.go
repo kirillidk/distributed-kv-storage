@@ -120,7 +120,7 @@ func TestHealthCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := healthClient.Check(ctx, &healthgrpc.HealthCheckRequest{Service: "kv-engine"})
+	resp, err := healthClient.Check(ctx, &healthgrpc.HealthCheckRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, healthgrpc.HealthCheckResponse_SERVING, resp.GetStatus())

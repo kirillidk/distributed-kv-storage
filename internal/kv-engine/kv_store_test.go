@@ -56,7 +56,7 @@ func TestKVStorage(t *testing.T) {
 	assert.Equal(t, "value4", res)
 	assert.Nil(t, err)
 
-	// ttl behavior: 0 < ttl <= 2_502_000
+	// ttl behavior: 0 < ttl <= 30 days (relative)
 	err = st.Set("expires_after_1_minute", "value5", 60)
 	assert.Nil(t, err)
 	res, err = st.Get("expires_after_1_minute")
@@ -80,7 +80,7 @@ func TestKVStorage(t *testing.T) {
 	res, err = st.Get("expires_after_30_days")
 	assert.ErrorIs(t, err, ErrKeyNotFound)
 
-	// ttl behavior: ttl > 2_520_000
+	// ttl behavior: ttl > 30 days (absolute)
 	err = st.Set("expires_absolute", "value7", SECONDS_IN_MONTH+1)
 	assert.Nil(t, err)
 	time.SetTime(SECONDS_IN_MONTH)
