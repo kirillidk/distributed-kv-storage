@@ -60,11 +60,11 @@ func (s *server) RunServer(port int) {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	grpc := grpc.NewServer()
-	kvv1.RegisterKVServiceServer(grpc, s)
+	grpcServer := grpc.NewServer()
+	kvv1.RegisterKVServiceServer(grpcServer, s)
 	healthcheck := health.NewServer()
 	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
-	healthgrpc.RegisterHealthServer(grpc, healthcheck)
+	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
 
 	serverStopped := make(chan struct{}, 1)
 	go func() {
@@ -76,7 +76,7 @@ func (s *server) RunServer(port int) {
 		healthcheck.Shutdown()
 		timer := time.AfterFunc(10*time.Second, func() {
 			log.Println("Server couldn't stop gracefully in time. Doing force stop.")
-			grpc.Stop()
+			grpcServer.Stop()
 			// Unblock the main function.
 			select {
 			case serverStopped <- struct{}{}:
@@ -84,7 +84,7 @@ func (s *server) RunServer(port int) {
 			}
 		})
 		defer timer.Stop()
-		grpc.GracefulStop() // gracefully stop server after in-flight server streaming rpc finishes
+		grpcServer.GracefulStop() // gracefully stop server after in-flight server streaming rpc finishes
 		log.Println("Server stopped gracefully.")
 		// Unblock the main function.
 		select {
@@ -93,8 +93,8 @@ func (s *server) RunServer(port int) {
 		}
 	}()
 
-	err = grpc.Serve(lis)
-	if err != nil {
+	err = grpcServer.Serve(lis)
+	if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		log.Fatalf("failed to serve: %v", err)
 	}
 	<-serverStopped

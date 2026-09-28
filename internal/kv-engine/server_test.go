@@ -34,7 +34,7 @@ func newTestServer(t *testing.T, storage Storage) (kvv1.KVServiceClient, healthg
 
 	healthcheck := health.NewServer()
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
-	healthcheck.SetServingStatus("kv-engine", healthgrpc.HealthCheckResponse_SERVING)
+	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 
 	go func() {
 		_ = grpcServer.Serve(lis)
