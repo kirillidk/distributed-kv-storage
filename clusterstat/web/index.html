@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cluster Status</title>
+  <style>
+    :root {
+      --bg: #09080c;
+      --card: #131c2b;
+      --border: #0b0c0d;
+      --text: #e7ecf3;
+      --muted: #7889a4;
+      --up: #22910c;
+      --down: #ff0040c0;
+      --unknown: #f8b541;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.UP { background: rgba(61, 214, 140, 0.15); color: var(--up); }
+    .badge.DOWN { background: rgba(240, 113, 120, 0.15); color: var(--down); }
+    .badge.UNKNOWN { background: rgba(255, 204, 102, 0.15); color: var(--unknown); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    th {
+      background: rgba(0,0,0,0.25);
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: none; }
+    .error {
+      color: var(--down);
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .footer { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+    .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot.UP { background: var(--up); }
+    .dot.DOWN { background: var(--down); }
+    .dot.UNKNOWN { background: var(--unknown); }
+  </style>
+</head>
+
+<body>
+  <h1>Cluster Status</h1>
+  <p class="subtitle">read-only · auto-refresh · <span id="updated">—</span></p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Node</th>
+        <th>Component</th>
+        <th>Address</th>
+        <th>Status</th>
+        <th>Last check</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr>
+    </tbody>
+  </table>
+
+  <p class="footer">clusterstat · observing only</p>
+
+  <script>
+    async function refresh() {
+      try {
+        const res = await fetch('/api/v1/components');
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        const tbody = document.getElementById('rows');
+        tbody.innerHTML = '';
+
+        const list = (data.components || []).slice().sort((a, b) => {
+          const na = a.node_id || '';
+          const nb = b.node_id || '';
+          if (na !== nb) return na.localeCompare(nb);
+          return (a.type || '').localeCompare(b.type || '');
+        });
+
+        for (const c of list) {
+          const status = c.status || 'UNKNOWN';
+          const checked = c.checked_at ? new Date(c.checked_at).toLocaleString() : '-';
+          const err = c.error || '';
+          const tr = document.createElement('tr');
+
+          const addText = (text) => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            tr.appendChild(td);
+            return td;
+          };
+
+          addText(c.node_id || '-');
+          addText(c.type || '');
+          addText(c.address || '');
+
+          const statusTd = document.createElement('td');
+          const dot = document.createElement('span');
+          dot.className = 'dot ' + status;
+          const badge = document.createElement('span');
+          badge.className = 'badge ' + status;
+          badge.textContent = status;
+          statusTd.append(dot, badge);
+          tr.appendChild(statusTd);
+
+          addText(checked);
+
+          const errTd = addText(err);
+          errTd.className = 'error';
+          errTd.title = err;
+
+          tbody.appendChild(tr);
+        }
+        
+        document.getElementById('updated').textContent =
+          'updated ' + new Date().toLocaleTimeString();
+      } catch (e) {
+        document.getElementById('updated').textContent = 'error: ' + e.message;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
