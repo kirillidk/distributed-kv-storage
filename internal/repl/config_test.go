@@ -10,9 +10,12 @@ import (
 
 const validManifest = `nodes:
   - id: node_0
-    repl_address: 127.0.0.1:7001
+    repl:
+      listen_addr: 0.0.0.0:7001
+      connect_addr: node-0:7001
     engine:
-      address: 127.0.0.1:8001
+      local_addr: 127.0.0.1:8001
+      connect_addr: node-0:8001
       command: [./bin/kv-engine, --port, "8001"]
       restart_delay: 1s
       shutdown_timeout: 5s
@@ -39,11 +42,27 @@ func TestLoadManifestAndFindNode(t *testing.T) {
 	if node.Engine.RestartDelay.Duration != time.Second || node.Engine.ShutdownTimeout.Duration != 5*time.Second {
 		t.Fatalf("unexpected engine durations: %+v", node.Engine)
 	}
+	if node.Repl.ListenAddr != "0.0.0.0:7001" || node.Repl.ConnectAddr != "node-0:7001" {
+		t.Fatalf("unexpected repl addresses: %+v", node.Repl)
+	}
+	if node.Engine.LocalAddr != "127.0.0.1:8001" || node.Engine.ConnectAddr != "node-0:8001" {
+		t.Fatalf("unexpected engine addresses: %+v", node.Engine)
+	}
 	if len(node.Engine.Command) != 3 || node.Engine.Command[1] != "--port" || node.Engine.Command[2] != "8001" {
 		t.Fatalf("unexpected command: %v", node.Engine.Command)
 	}
 	if _, err := manifest.FindNode("missing"); err == nil || !strings.Contains(err.Error(), `node "missing" not found`) {
 		t.Fatalf("expected missing node error, got %v", err)
+	}
+}
+
+func TestCanonicalExampleManifest(t *testing.T) {
+	manifest, err := LoadManifest(filepath.Join("..", "..", "examples", "single-node", "cluster.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Nodes) != 1 || manifest.Nodes[0].ID != "node-1" {
+		t.Fatalf("unexpected canonical manifest: %+v", manifest)
 	}
 }
 
@@ -55,16 +74,21 @@ func TestLoadManifestErrors(t *testing.T) {
 	}{
 		{"invalid YAML", "nodes: [", "parse manifest"},
 		{"duplicate ID", validManifest + `  - id: node_0
-    repl_address: 127.0.0.1:7002
+    repl:
+      listen_addr: 0.0.0.0:7002
+      connect_addr: node-2:7002
     engine:
-      address: 127.0.0.1:8002
+      local_addr: 127.0.0.1:8002
+      connect_addr: node-2:8002
       command: [kv-engine]
       restart_delay: 1s
       shutdown_timeout: 5s
 `, `duplicate node ID "node_0"`},
 		{"missing command", strings.Replace(validManifest, "command: [./bin/kv-engine, --port, \"8001\"]", "command: []", 1), "engine.command"},
 		{"invalid duration", strings.Replace(validManifest, "restart_delay: 1s", "restart_delay: soon", 1), "invalid duration"},
-		{"missing address", strings.Replace(validManifest, "address: 127.0.0.1:8001", "address: ''", 1), "engine.address"},
+		{"missing local address", strings.Replace(validManifest, "local_addr: 127.0.0.1:8001", "local_addr: ''", 1), "engine.local_addr"},
+		{"wildcard repl connect address", strings.Replace(validManifest, "connect_addr: node-0:7001", "connect_addr: 0.0.0.0:7001", 1), "cannot be used as a connection address"},
+		{"wildcard engine connect address", strings.Replace(validManifest, "connect_addr: node-0:8001", "connect_addr: 0.0.0.0:8001", 1), "cannot be used as a connection address"},
 		{"version field", "version: 1\n" + validManifest, "field version not found"},
 		{"unknown field", validManifest + "extra: true\n", "field extra not found"},
 		{"extra document", validManifest + "---\nnodes: []\n", "multiple YAML documents"},

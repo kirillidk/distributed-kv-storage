@@ -23,9 +23,12 @@ func TestRunRejectsUnknownNode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
 	data := `nodes:
   - id: node_0
-    repl_address: 127.0.0.1:7001
+    repl:
+      listen_addr: 127.0.0.1:7001
+      connect_addr: node-0:7001
     engine:
-      address: 127.0.0.1:8001
+      local_addr: 127.0.0.1:8001
+      connect_addr: node-0:8001
       command: [kv-engine]
       restart_delay: 1s
       shutdown_timeout: 5s
