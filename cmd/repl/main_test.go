@@ -27,7 +27,6 @@ func TestRunRejectsUnknownNode(t *testing.T) {
       listen_addr: 127.0.0.1:7001
       connect_addr: node-0:7001
     engine:
-      local_addr: 127.0.0.1:8001
       connect_addr: node-0:8001
       command: [kv-engine]
       restart_delay: 1s

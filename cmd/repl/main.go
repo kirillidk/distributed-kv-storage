@@ -52,7 +52,6 @@ func run(args []string, logger *slog.Logger) error {
 		"node_id", node.ID,
 		"listen_addr", node.Repl.ListenAddr,
 		"connect_addr", node.Repl.ConnectAddr,
-		"engine_local_addr", node.Engine.LocalAddr,
 		"engine_connect_addr", node.Engine.ConnectAddr,
 	)
 	if err := repl.Run(ctx, *node, logger); err != nil {

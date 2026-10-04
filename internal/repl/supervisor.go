@@ -105,7 +105,7 @@ func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error 
 			healthCtx, stopHealth := context.WithCancel(ctx)
 			healthDone := make(chan struct{})
 			go func() {
-				monitorHealth(healthCtx, engine.LocalAddr, logger)
+				monitorHealth(healthCtx, engine.ConnectAddr, logger)
 				close(healthDone)
 			}()
 

@@ -30,6 +30,30 @@ Go import path:
 import kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 ```
 
+## Cluster manifest
+
+The cluster topology and local process settings are described in a shared
+YAML manifest:
+
+```yaml
+nodes:
+  - id: node-1
+    repl:
+      listen_addr: 0.0.0.0:7001
+      connect_addr: node-1:7001
+
+    engine:
+      connect_addr: node-1:8001
+      command:
+        - /usr/local/bin/kv-engine
+        - --port
+        - "8001"
+      restart_delay: 3s
+      shutdown_timeout: 5s
+```
+
+See [the manifest documentation](docs/manifest.md) for the field descriptions.
+
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are

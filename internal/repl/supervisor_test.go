@@ -62,8 +62,7 @@ func testNode(mode string) NodeConfig {
 			ConnectAddr: "node-0:7001",
 		},
 		Engine: EngineConfig{
-			LocalAddr:       "127.0.0.1:1",
-			ConnectAddr:     "node-0:8001",
+			ConnectAddr:     "127.0.0.1:1",
 			Command:         []string{os.Args[0], "-test.run=^TestEngineHelperProcess$", "--", mode},
 			RestartDelay:    Duration{50 * time.Millisecond},
 			ShutdownTimeout: Duration{100 * time.Millisecond},

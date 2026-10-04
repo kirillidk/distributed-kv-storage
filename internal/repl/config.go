@@ -31,7 +31,6 @@ type ReplConfig struct {
 }
 
 type EngineConfig struct {
-	LocalAddr       string   `yaml:"local_addr"`
 	ConnectAddr     string   `yaml:"connect_addr"`
 	Command         []string `yaml:"command"`
 	RestartDelay    Duration `yaml:"restart_delay"`
@@ -110,9 +109,6 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("duplicate repl connect address %q at nodes[%d] and %s", node.Repl.ConnectAddr, previous, label)
 		}
 		seenReplAddrs[node.Repl.ConnectAddr] = i
-		if err := validateAddress(node.Engine.LocalAddr, false); err != nil {
-			return fmt.Errorf("%s.engine.local_addr: %w", label, err)
-		}
 		if err := validateAddress(node.Engine.ConnectAddr, false); err != nil {
 			return fmt.Errorf("%s.engine.connect_addr: %w", label, err)
 		}
