@@ -1,0 +1,11 @@
+.git
+.github
+.idea
+.vscode
+
+AGENTS.md
+docs
+examples
+
+*.out
+coverage.*

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/config"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -35,7 +35,17 @@ type Collector struct {
 	checkTimeout time.Duration
 
 	mu     sync.RWMutex
-	states map[string]*ComponentState
+	states map[componentKey]*ComponentState
+}
+
+type componentKey struct {
+	nodeID  string
+	typeID  config.ComponentType
+	address string
+}
+
+func keyFor(comp config.Component) componentKey {
+	return componentKey{nodeID: comp.NodeID, typeID: comp.Type, address: comp.Address}
 }
 
 func New(components []config.Component, pollInterval, checkTimeout time.Duration) *Collector {
@@ -43,10 +53,10 @@ func New(components []config.Component, pollInterval, checkTimeout time.Duration
 		components:   components,
 		pollInterval: pollInterval,
 		checkTimeout: checkTimeout,
-		states:       make(map[string]*ComponentState, len(components)),
+		states:       make(map[componentKey]*ComponentState, len(components)),
 	}
 	for _, comp := range components {
-		c.states[comp.Address] = &ComponentState{
+		c.states[keyFor(comp)] = &ComponentState{
 			NodeID:  comp.NodeID,
 			Type:    comp.Type,
 			Address: comp.Address,
@@ -128,14 +138,14 @@ func (c *Collector) checkOne(parentCtx context.Context, comp config.Component) {
 		return
 	}
 
-	c.update(comp.Address, newStatus, errMsg)
+	c.update(comp, newStatus, errMsg)
 }
 
-func (c *Collector) update(address string, status Status, errMsg string) {
+func (c *Collector) update(comp config.Component, status Status, errMsg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	st := c.states[address]
+	st := c.states[keyFor(comp)]
 	old := st.Status
 
 	st.Status = status
@@ -144,6 +154,6 @@ func (c *Collector) update(address string, status Status, errMsg string) {
 
 	if old != status {
 		log.Printf("component %s (%s) %s → %s  error=%q",
-			address, st.Type, old, status, errMsg)
+			comp.Address, st.Type, old, status, errMsg)
 	}
 }

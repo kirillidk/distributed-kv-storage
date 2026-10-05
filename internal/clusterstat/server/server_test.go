@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/collector"
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/config"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
 )
 
 func TestHealthz(t *testing.T) {

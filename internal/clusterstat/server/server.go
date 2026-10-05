@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/collector"
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/web"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/web"
 )
 
 type Server struct {
