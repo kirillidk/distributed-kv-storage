@@ -20,13 +20,18 @@ type Manifest struct {
 }
 
 type NodeConfig struct {
-	ID          string       `yaml:"id"`
-	ReplAddress string       `yaml:"repl_address"`
-	Engine      EngineConfig `yaml:"engine"`
+	ID     string       `yaml:"id"`
+	Repl   ReplConfig   `yaml:"repl"`
+	Engine EngineConfig `yaml:"engine"`
+}
+
+type ReplConfig struct {
+	ListenAddr  string `yaml:"listen_addr"`
+	ConnectAddr string `yaml:"connect_addr"`
 }
 
 type EngineConfig struct {
-	Address         string   `yaml:"address"`
+	ConnectAddr     string   `yaml:"connect_addr"`
 	Command         []string `yaml:"command"`
 	RestartDelay    Duration `yaml:"restart_delay"`
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
@@ -82,22 +87,35 @@ func (m *Manifest) Validate() error {
 		return errors.New("nodes must contain at least one node")
 	}
 
-	seen := make(map[string]int, len(m.Nodes))
+	seenIDs := make(map[string]int, len(m.Nodes))
+	seenReplAddrs := make(map[string]int, len(m.Nodes))
+	seenEngineAddrs := make(map[string]int, len(m.Nodes))
 	for i, node := range m.Nodes {
 		label := fmt.Sprintf("nodes[%d]", i)
 		if strings.TrimSpace(node.ID) == "" {
 			return fmt.Errorf("%s.id is required", label)
 		}
-		if previous, exists := seen[node.ID]; exists {
+		if previous, exists := seenIDs[node.ID]; exists {
 			return fmt.Errorf("duplicate node ID %q at nodes[%d] and %s", node.ID, previous, label)
 		}
-		seen[node.ID] = i
-		if err := validateAddress(node.ReplAddress); err != nil {
-			return fmt.Errorf("%s.repl_address: %w", label, err)
+		seenIDs[node.ID] = i
+		if err := validateAddress(node.Repl.ListenAddr, true); err != nil {
+			return fmt.Errorf("%s.repl.listen_addr: %w", label, err)
 		}
-		if err := validateAddress(node.Engine.Address); err != nil {
-			return fmt.Errorf("%s.engine.address: %w", label, err)
+		if err := validateAddress(node.Repl.ConnectAddr, false); err != nil {
+			return fmt.Errorf("%s.repl.connect_addr: %w", label, err)
 		}
+		if previous, exists := seenReplAddrs[node.Repl.ConnectAddr]; exists {
+			return fmt.Errorf("duplicate repl connect address %q at nodes[%d] and %s", node.Repl.ConnectAddr, previous, label)
+		}
+		seenReplAddrs[node.Repl.ConnectAddr] = i
+		if err := validateAddress(node.Engine.ConnectAddr, false); err != nil {
+			return fmt.Errorf("%s.engine.connect_addr: %w", label, err)
+		}
+		if previous, exists := seenEngineAddrs[node.Engine.ConnectAddr]; exists {
+			return fmt.Errorf("duplicate engine connect address %q at nodes[%d] and %s", node.Engine.ConnectAddr, previous, label)
+		}
+		seenEngineAddrs[node.Engine.ConnectAddr] = i
 		if len(node.Engine.Command) == 0 || strings.TrimSpace(node.Engine.Command[0]) == "" {
 			return fmt.Errorf("%s.engine.command must start with an executable", label)
 		}
@@ -111,7 +129,7 @@ func (m *Manifest) Validate() error {
 	return nil
 }
 
-func validateAddress(address string) error {
+func validateAddress(address string, allowUnspecified bool) error {
 	if strings.TrimSpace(address) == "" {
 		return errors.New("address is required")
 	}
@@ -122,6 +140,9 @@ func validateAddress(address string) error {
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("expected port between 1 and 65535, got %q", portText)
+	}
+	if ip := net.ParseIP(host); !allowUnspecified && ip != nil && ip.IsUnspecified() {
+		return fmt.Errorf("unspecified host %q cannot be used as a connection address", host)
 	}
 	return nil
 }

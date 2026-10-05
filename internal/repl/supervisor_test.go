@@ -56,10 +56,13 @@ func TestEngineHelperProcess(t *testing.T) {
 
 func testNode(mode string) NodeConfig {
 	return NodeConfig{
-		ID:          "node_0",
-		ReplAddress: "127.0.0.1:0",
+		ID: "node_0",
+		Repl: ReplConfig{
+			ListenAddr:  "127.0.0.1:0",
+			ConnectAddr: "node-0:7001",
+		},
 		Engine: EngineConfig{
-			Address:         "127.0.0.1:1",
+			ConnectAddr:     "127.0.0.1:1",
 			Command:         []string{os.Args[0], "-test.run=^TestEngineHelperProcess$", "--", mode},
 			RestartDelay:    Duration{50 * time.Millisecond},
 			ShutdownTimeout: Duration{100 * time.Millisecond},

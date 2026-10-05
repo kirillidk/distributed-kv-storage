@@ -20,9 +20,9 @@ import (
 
 // Run serves node health and supervises the local engine until ctx is canceled.
 func Run(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
-	listener, err := net.Listen("tcp", node.ReplAddress)
+	listener, err := net.Listen("tcp", node.Repl.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("listen on repl address %q: %w", node.ReplAddress, err)
+		return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
 	}
 	return runOnListener(ctx, node, logger, listener)
 }
@@ -105,7 +105,7 @@ func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error 
 			healthCtx, stopHealth := context.WithCancel(ctx)
 			healthDone := make(chan struct{})
 			go func() {
-				monitorHealth(healthCtx, engine.Address, logger)
+				monitorHealth(healthCtx, engine.ConnectAddr, logger)
 				close(healthDone)
 			}()
 

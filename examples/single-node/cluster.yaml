@@ -1,0 +1,15 @@
+nodes:
+  - id: node-1
+    repl:
+      listen_addr: 0.0.0.0:7001
+      connect_addr: node-1:7001
+
+    engine:
+      connect_addr: node-1:8001
+      command:
+        - /usr/local/bin/kv-engine
+        - --port
+        - "8001"
+
+      restart_delay: 3s
+      shutdown_timeout: 5s
