@@ -1,0 +1,37 @@
+services:
+  node-1:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: node
+    image: distributed-kv-storage-node:local
+    command:
+      - --manifest
+      - /etc/distributed-kv/cluster.yaml
+      - --node-id
+      - node-1
+    volumes:
+      - ./cluster.yaml:/etc/distributed-kv/cluster.yaml:ro
+    ports:
+      - "7001:7001"
+      - "8001:8001"
+    stop_grace_period: 10s
+
+  clusterstat:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: clusterstat
+    image: distributed-kv-storage-clusterstat:local
+    command:
+      - --manifest
+      - /etc/distributed-kv/cluster.yaml
+      - --listen
+      - 0.0.0.0:8080
+    volumes:
+      - ./cluster.yaml:/etc/distributed-kv/cluster.yaml:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - node-1
+    stop_grace_period: 10s
