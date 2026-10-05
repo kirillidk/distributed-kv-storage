@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/collector"
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/config"
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/server"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/server"
 )
 
 func main() {

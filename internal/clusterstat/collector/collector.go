@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kirillidk/distributed-kv-storage/clusterstat/internal/config"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"

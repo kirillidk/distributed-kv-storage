@@ -8,13 +8,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY api ./api
-COPY clusterstat ./clusterstat
 COPY cmd ./cmd
 COPY internal ./internal
 
 RUN CGO_ENABLED=0 go build -trimpath -o /out/repl ./cmd/repl \
     && CGO_ENABLED=0 go build -trimpath -o /out/kv-engine ./cmd/kv-engine \
-    && CGO_ENABLED=0 go build -trimpath -o /out/clusterstat ./clusterstat/cmd/clusterstat
+    && CGO_ENABLED=0 go build -trimpath -o /out/clusterstat ./cmd/clusterstat
 
 FROM alpine:3.22 AS runtime-base
 
