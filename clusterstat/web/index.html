@@ -6,11 +6,11 @@
   <title>Cluster Status</title>
   <style>
     :root {
-      --bg: #09080c;
-      --card: #131c2b;
-      --border: #0b0c0d;
-      --text: #e7ecf3;
-      --muted: #7889a4;
+      --bg: #ffffff;
+      --card: #ffffff;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
       --up: #22910c;
       --down: #ff0040c0;
       --unknown: #f8b541;
@@ -50,7 +50,7 @@
       font-size: 0.9rem;
     }
     th {
-      background: rgba(0,0,0,0.25);
+      background: #f8fafc;
       color: var(--muted);
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -78,7 +78,7 @@
 
 <body>
   <h1>Cluster Status</h1>
-  <p class="subtitle">read-only · auto-refresh · <span id="updated">—</span></p>
+  <p class="subtitle">auto-refresh · <span id="updated">—</span></p>
 
   <table>
     <thead>
@@ -96,7 +96,7 @@
     </tbody>
   </table>
 
-  <p class="footer">clusterstat · observing only</p>
+  <p class="footer">clusterstat</p>
 
   <script>
     async function refresh() {
