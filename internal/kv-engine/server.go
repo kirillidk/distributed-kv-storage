@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ type server struct {
 	kvv2.UnimplementedKVServiceServer
 	storage       Storage
 	appliedOffset uint64
+	lock          sync.RWMutex
 }
 
 const setCommandID = 1
@@ -57,6 +59,9 @@ func (s *server) Get(_ context.Context, in *kvv2.GetRequest) (*kvv2.GetResponse,
 }
 
 func (s *server) Apply(_ context.Context, in *kvv2.ApplyRequest) (*kvv2.ApplyResponse, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
 	if s.appliedOffset != in.Offset {
 		return &kvv2.ApplyResponse{}, nil
 	}
@@ -105,6 +110,9 @@ func (s *server) Apply(_ context.Context, in *kvv2.ApplyRequest) (*kvv2.ApplyRes
 }
 
 func (s *server) Status(_ context.Context, in *kvv2.StatusRequest) (*kvv2.StatusResponse, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
 	return &kvv2.StatusResponse{Offset: s.appliedOffset}, nil
 }
 
@@ -158,5 +166,5 @@ func (s *server) RunServer(port int) {
 }
 
 func CreateServer(storage Storage) server {
-	return server{storage: storage, appliedOffset: 0}
+	return server{storage: storage}
 }

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math/rand/v2"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -331,4 +333,37 @@ func TestApplyFailedSetDoesNotAdvanceOffset(t *testing.T) {
 	if err == nil {
 		assert.Equal(t, uint64(len(good)), statusResp.GetOffset())
 	}
+}
+
+func TestApplyRaces(t *testing.T) {
+	client, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	payload := encodeSetPayload(0, []byte("k"), []byte("v"))
+
+	wg := new(sync.WaitGroup)
+	wg.Add(10)
+
+	for range 10 {
+		go func(wg *sync.WaitGroup) {
+			defer wg.Done()
+			offset := 0
+			for range 1000 {
+				if rand.IntN(2) == 0 {
+					_, _ = client.Apply(ctx, &kvv2.ApplyRequest{
+						Offset:  uint64(offset),
+						Payload: payload,
+					})
+					offset += 1
+				} else {
+					_, _ = client.Status(ctx, &kvv2.StatusRequest{})
+				}
+			}
+		}(wg)
+	}
+
+	wg.Wait()
 }
