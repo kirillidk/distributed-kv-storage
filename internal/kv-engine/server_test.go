@@ -155,7 +155,7 @@ func TestStatusInitialOffsetIsZero(t *testing.T) {
 	}
 }
 
-func TestApplyStoresKeyAndAdvancesOffset(t *testing.T) {
+func TestApplySuccesfulCase(t *testing.T) {
 	client, _, cleanup := newTestServer(t, CreateMemoryStorage())
 	defer cleanup()
 
@@ -178,6 +178,25 @@ func TestApplyStoresKeyAndAdvancesOffset(t *testing.T) {
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, wantOffset, statusResp.GetOffset())
+	}
+
+	// The next command must be accepted when its offset lines up with where
+	// the server currently is.
+	second := encodeSetPayload(0, []byte("second-key"), []byte("second-value"))
+
+	_, err = client.Apply(ctx, &kvv2.ApplyRequest{Offset: wantOffset, Payload: second})
+	assert.NoError(t, err)
+
+	got, err = client.Get(ctx, &kvv2.GetRequest{Key: []byte("second-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("second-value"), got.GetValue())
+	}
+
+	statusResp, err = client.Status(ctx, &kvv2.StatusRequest{})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, wantOffset+uint64(len(second)), statusResp.GetOffset())
 	}
 }
 
