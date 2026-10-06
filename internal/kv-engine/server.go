@@ -1,7 +1,9 @@
 package kvengine
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -11,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
+	kvv2 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -20,9 +22,12 @@ import (
 )
 
 type server struct {
-	kvv1.UnimplementedKVServiceServer
-	storage Storage
+	kvv2.UnimplementedKVServiceServer
+	storage       Storage
+	appliedOffset uint64
 }
+
+const setCommandID = 1
 
 func convertError(e error) error {
 	switch {
@@ -35,20 +40,72 @@ func convertError(e error) error {
 	}
 }
 
-func (s *server) Set(_ context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
+func (s *server) Set(_ context.Context, in *kvv2.SetRequest) (*kvv2.SetResponse, error) {
 	err := s.storage.Set(string(in.Key), string(in.Value), in.Ttl)
 	if err != nil {
 		return nil, convertError(err)
 	}
-	return &kvv1.SetResponse{}, nil
+	return &kvv2.SetResponse{}, nil
 }
 
-func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse, error) {
+func (s *server) Get(_ context.Context, in *kvv2.GetRequest) (*kvv2.GetResponse, error) {
 	res, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		return nil, convertError(err)
 	}
-	return &kvv1.GetResponse{Value: []byte(res)}, nil
+	return &kvv2.GetResponse{Value: []byte(res)}, nil
+}
+
+func (s *server) Apply(_ context.Context, in *kvv2.ApplyRequest) (*kvv2.ApplyResponse, error) {
+	if s.appliedOffset != in.Offset {
+		return &kvv2.ApplyResponse{}, nil
+	}
+	payload := in.Payload
+	r := bytes.NewReader(payload)
+
+	cmd, err := binary.ReadUvarint(r)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	switch cmd {
+	case setCommandID:
+		ttl, err := binary.ReadUvarint(r)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		keyLength, err := binary.ReadUvarint(r)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		valueLength, err := binary.ReadUvarint(r)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+
+		key := make([]byte, keyLength)
+		if n, _ := r.Read(key); uint64(n) != keyLength {
+			return nil, status.Error(codes.InvalidArgument, "malformed payload")
+		}
+		value := make([]byte, valueLength)
+		if n, _ := r.Read(value); uint64(n) != valueLength {
+			return nil, status.Error(codes.InvalidArgument, "malformed payload")
+		}
+
+		err = s.storage.Set(string(key), string(value), ttl)
+		if err != nil {
+			return nil, convertError(err)
+		}
+
+		s.appliedOffset += uint64(len(payload))
+		return &kvv2.ApplyResponse{}, nil
+	default:
+		return nil, status.Error(codes.InvalidArgument, "invalid command type")
+	}
+}
+
+func (s *server) Status(_ context.Context, in *kvv2.StatusRequest) (*kvv2.StatusResponse, error) {
+	return &kvv2.StatusResponse{Offset: s.appliedOffset}, nil
 }
 
 func (s *server) RunServer(port int) {
@@ -61,7 +118,7 @@ func (s *server) RunServer(port int) {
 	}
 
 	grpcServer := grpc.NewServer()
-	kvv1.RegisterKVServiceServer(grpcServer, s)
+	kvv2.RegisterKVServiceServer(grpcServer, s)
 	healthcheck := health.NewServer()
 	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
@@ -101,5 +158,5 @@ func (s *server) RunServer(port int) {
 }
 
 func CreateServer(storage Storage) server {
-	return server{storage: storage}
+	return server{storage: storage, appliedOffset: 0}
 }
