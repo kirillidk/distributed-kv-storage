@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package engine.v1;
+
+option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;kvv1";
+
+service EngineService {
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+message ApplyRequest {
+  uint64 offset = 1;
+  bytes payload = 2;
+}
+
+message ApplyResponse {}
+
+message StatusRequest {}
+
+message StatusResponse {
+  uint64 offset = 1;
+}

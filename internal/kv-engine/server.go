@@ -14,7 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	kvv2 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v2"
+	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
+	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -23,13 +24,14 @@ import (
 )
 
 type server struct {
-	kvv2.UnimplementedKVServiceServer
+	kvv1.UnimplementedKVServiceServer
+	enginev1.UnimplementedEngineServiceServer
 	storage       Storage
 	appliedOffset uint64
 	lock          sync.RWMutex
 }
 
-const setCommandID = 1
+const setEventMagic uint32 = 0x6f825fba
 
 func convertError(e error) error {
 	switch {
@@ -42,78 +44,89 @@ func convertError(e error) error {
 	}
 }
 
-func (s *server) Set(_ context.Context, in *kvv2.SetRequest) (*kvv2.SetResponse, error) {
+func (s *server) Set(_ context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
 	err := s.storage.Set(string(in.Key), string(in.Value), in.Ttl)
 	if err != nil {
 		return nil, convertError(err)
 	}
-	return &kvv2.SetResponse{}, nil
+	return &kvv1.SetResponse{}, nil
 }
 
-func (s *server) Get(_ context.Context, in *kvv2.GetRequest) (*kvv2.GetResponse, error) {
-	res, err := s.storage.Get(string(in.Key))
+func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse, error) {
+	value, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		return nil, convertError(err)
 	}
-	return &kvv2.GetResponse{Value: []byte(res)}, nil
+	return &kvv1.GetResponse{Value: []byte(value), ExpiresAt: expiresAt}, nil
 }
 
-func (s *server) Apply(_ context.Context, in *kvv2.ApplyRequest) (*kvv2.ApplyResponse, error) {
+func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.ApplyResponse, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	if s.appliedOffset != in.Offset {
-		return &kvv2.ApplyResponse{}, nil
+	if in.Offset <= s.appliedOffset {
+		return &enginev1.ApplyResponse{}, nil
+	}
+	if in.Offset != s.appliedOffset+uint64(len(in.Payload)) {
+		return nil, status.Error(codes.InvalidArgument, "invalid offset")
 	}
 	payload := in.Payload
 	r := bytes.NewReader(payload)
 
-	cmd, err := binary.ReadUvarint(r)
-	if err != nil {
+	order := binary.BigEndian
+
+	var cmd uint32
+	if err := binary.Read(r, order, &cmd); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	switch cmd {
-	case setCommandID:
-		ttl, err := binary.ReadUvarint(r)
-		if err != nil {
+	case setEventMagic:
+		var expiresAt uint64
+		if err := binary.Read(r, order, &expiresAt); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		keyLength, err := binary.ReadUvarint(r)
-		if err != nil {
+		var keySize, valueSize uint32
+		if err := binary.Read(r, order, &keySize); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
-		valueLength, err := binary.ReadUvarint(r)
-		if err != nil {
+		if err := binary.Read(r, order, &valueSize); err != nil {
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		key := make([]byte, keyLength)
-		if n, _ := r.Read(key); uint64(n) != keyLength {
+		if keySize > uint32(r.Len()) {
 			return nil, status.Error(codes.InvalidArgument, "malformed payload")
 		}
-		value := make([]byte, valueLength)
-		if n, _ := r.Read(value); uint64(n) != valueLength {
+		key := make([]byte, keySize)
+		if n, _ := r.Read(key); uint32(n) != keySize {
 			return nil, status.Error(codes.InvalidArgument, "malformed payload")
 		}
 
-		err = s.storage.Set(string(key), string(value), ttl)
+		if valueSize > uint32(r.Len()) {
+			return nil, status.Error(codes.InvalidArgument, "malformed payload")
+		}
+		value := make([]byte, valueSize)
+		if n, _ := r.Read(value); uint32(n) != valueSize {
+			return nil, status.Error(codes.InvalidArgument, "malformed payload")
+		}
+
+		err := s.storage.Set(string(key), string(value), expiresAt)
 		if err != nil {
 			return nil, convertError(err)
 		}
 
-		s.appliedOffset += uint64(len(payload))
-		return &kvv2.ApplyResponse{}, nil
+		s.appliedOffset = in.Offset
+		return &enginev1.ApplyResponse{}, nil
 	default:
 		return nil, status.Error(codes.InvalidArgument, "invalid command type")
 	}
 }
 
-func (s *server) Status(_ context.Context, in *kvv2.StatusRequest) (*kvv2.StatusResponse, error) {
+func (s *server) Status(_ context.Context, in *enginev1.StatusRequest) (*enginev1.StatusResponse, error) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	return &kvv2.StatusResponse{Offset: s.appliedOffset}, nil
+	return &enginev1.StatusResponse{Offset: s.appliedOffset}, nil
 }
 
 func (s *server) RunServer(port int) {
@@ -126,7 +139,8 @@ func (s *server) RunServer(port int) {
 	}
 
 	grpcServer := grpc.NewServer()
-	kvv2.RegisterKVServiceServer(grpcServer, s)
+	kvv1.RegisterKVServiceServer(grpcServer, s)
+	enginev1.RegisterEngineServiceServer(grpcServer, s)
 	healthcheck := health.NewServer()
 	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)

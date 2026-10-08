@@ -169,6 +169,7 @@ func (x *GetRequest) GetKey() []byte {
 type GetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	ExpiresAt     uint64                 `protobuf:"varint,2,opt,name=expiresAt,proto3" json:"expiresAt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -210,6 +211,13 @@ func (x *GetResponse) GetValue() []byte {
 	return nil
 }
 
+func (x *GetResponse) GetExpiresAt() uint64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
 var File_kv_v1_kv_proto protoreflect.FileDescriptor
 
 const file_kv_v1_kv_proto_rawDesc = "" +
@@ -223,9 +231,10 @@ const file_kv_v1_kv_proto_rawDesc = "" +
 	"\vSetResponse\"\x1e\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\fR\x03key\"#\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\"A\n" +
 	"\vGetResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05value2g\n" +
+	"\x05value\x18\x01 \x01(\fR\x05value\x12\x1c\n" +
+	"\texpiresAt\x18\x02 \x01(\x04R\texpiresAt2g\n" +
 	"\tKVService\x12,\n" +
 	"\x03Set\x12\x11.kv.v1.SetRequest\x1a\x12.kv.v1.SetResponse\x12,\n" +
 	"\x03Get\x12\x11.kv.v1.GetRequest\x1a\x12.kv.v1.GetResponseBCZAgithub.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1;kvv1b\x06proto3"
