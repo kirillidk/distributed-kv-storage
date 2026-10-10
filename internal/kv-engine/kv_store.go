@@ -16,7 +16,7 @@ const (
 
 type Storage interface {
 	Set(key string, value string, expires uint64) error
-	Get(key string) (string, error)
+	Get(key string) (string, uint64, error)
 }
 
 type StorageEntry struct {
@@ -46,22 +46,22 @@ func (m *MemoryStorage) Set(key string, value string, expires uint64) error {
 	return nil
 }
 
-func (m *MemoryStorage) Get(key string) (string, error) {
+func (m *MemoryStorage) Get(key string) (string, uint64, error) {
 	if key == "" {
-		return "", ErrEmptyKey
+		return "", 0, ErrEmptyKey
 	}
 
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	value, ok := m.values[key]
 	if !ok {
-		return "", ErrKeyNotFound
+		return "", 0, ErrKeyNotFound
 	}
 
 	if m.timeSource.Now() >= value.expires {
-		return "", ErrKeyNotFound
+		return "", 0, ErrKeyNotFound
 	} else {
-		return value.value, nil
+		return value.value, value.expires, nil
 	}
 }
 

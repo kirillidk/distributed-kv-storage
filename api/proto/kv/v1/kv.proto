@@ -30,4 +30,5 @@ message GetRequest {
 
 message GetResponse {
   bytes value = 1;
+  uint64 expires_at = 2;
 }
