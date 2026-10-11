@@ -167,9 +167,10 @@ func (x *GetRequest) GetKey() []byte {
 }
 
 type GetResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Value         []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
-	ExpiresAt     uint64                 `protobuf:"varint,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Value []byte                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	// Absolute Unix timestamp in seconds. Zero means no expiration.
+	ExpiresAt     uint64 `protobuf:"varint,2,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

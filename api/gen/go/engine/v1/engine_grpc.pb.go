@@ -4,7 +4,7 @@
 // - protoc             (unknown)
 // source: engine/v1/engine.proto
 
-package kvv1
+package enginev1
 
 import (
 	context "context"
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EngineService_Apply_FullMethodName  = "/engine.v1.EngineService/Apply"
-	EngineService_Status_FullMethodName = "/engine.v1.EngineService/Status"
+	EngineService_Apply_FullMethodName     = "/engine.v1.EngineService/Apply"
+	EngineService_GetOffset_FullMethodName = "/engine.v1.EngineService/GetOffset"
 )
 
 // EngineServiceClient is the client API for EngineService service.
@@ -28,7 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EngineServiceClient interface {
 	Apply(ctx context.Context, in *ApplyRequest, opts ...grpc.CallOption) (*ApplyResponse, error)
-	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	GetOffset(ctx context.Context, in *GetOffsetRequest, opts ...grpc.CallOption) (*GetOffsetResponse, error)
 }
 
 type engineServiceClient struct {
@@ -49,10 +49,10 @@ func (c *engineServiceClient) Apply(ctx context.Context, in *ApplyRequest, opts 
 	return out, nil
 }
 
-func (c *engineServiceClient) Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+func (c *engineServiceClient) GetOffset(ctx context.Context, in *GetOffsetRequest, opts ...grpc.CallOption) (*GetOffsetResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(StatusResponse)
-	err := c.cc.Invoke(ctx, EngineService_Status_FullMethodName, in, out, cOpts...)
+	out := new(GetOffsetResponse)
+	err := c.cc.Invoke(ctx, EngineService_GetOffset_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (c *engineServiceClient) Status(ctx context.Context, in *StatusRequest, opt
 // for forward compatibility.
 type EngineServiceServer interface {
 	Apply(context.Context, *ApplyRequest) (*ApplyResponse, error)
-	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	GetOffset(context.Context, *GetOffsetRequest) (*GetOffsetResponse, error)
 	mustEmbedUnimplementedEngineServiceServer()
 }
 
@@ -78,8 +78,8 @@ type UnimplementedEngineServiceServer struct{}
 func (UnimplementedEngineServiceServer) Apply(context.Context, *ApplyRequest) (*ApplyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Apply not implemented")
 }
-func (UnimplementedEngineServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
+func (UnimplementedEngineServiceServer) GetOffset(context.Context, *GetOffsetRequest) (*GetOffsetResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOffset not implemented")
 }
 func (UnimplementedEngineServiceServer) mustEmbedUnimplementedEngineServiceServer() {}
 func (UnimplementedEngineServiceServer) testEmbeddedByValue()                       {}
@@ -120,20 +120,20 @@ func _EngineService_Apply_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
-func _EngineService_Status_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(StatusRequest)
+func _EngineService_GetOffset_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOffsetRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(EngineServiceServer).Status(ctx, in)
+		return srv.(EngineServiceServer).GetOffset(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: EngineService_Status_FullMethodName,
+		FullMethod: EngineService_GetOffset_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EngineServiceServer).Status(ctx, req.(*StatusRequest))
+		return srv.(EngineServiceServer).GetOffset(ctx, req.(*GetOffsetRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -150,8 +150,8 @@ var EngineService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _EngineService_Apply_Handler,
 		},
 		{
-			MethodName: "Status",
-			Handler:    _EngineService_Status_Handler,
+			MethodName: "GetOffset",
+			Handler:    _EngineService_GetOffset_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -27,6 +27,7 @@ type server struct {
 	kvv1.UnimplementedKVServiceServer
 	enginev1.UnimplementedEngineServiceServer
 	storage       Storage
+	timeSource    TimeSource
 	appliedOffset uint64
 	lock          sync.RWMutex
 }
@@ -45,7 +46,11 @@ func convertError(e error) error {
 }
 
 func (s *server) Set(_ context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
-	err := s.storage.Set(string(in.Key), string(in.Value), in.Ttl)
+	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	err = s.storage.Set(string(in.Key), string(in.Value), expiresAt)
 	if err != nil {
 		return nil, convertError(err)
 	}
@@ -67,8 +72,14 @@ func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.
 	if in.Offset <= s.appliedOffset {
 		return &enginev1.ApplyResponse{}, nil
 	}
-	if in.Offset != s.appliedOffset+uint64(len(in.Payload)) {
-		return nil, status.Error(codes.InvalidArgument, "invalid offset")
+	if in.Offset-s.appliedOffset != uint64(len(in.Payload)) {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"invalid offset: applied=%d payload_size=%d got=%d",
+			s.appliedOffset,
+			len(in.Payload),
+			in.Offset,
+		)
 	}
 	payload := in.Payload
 	r := bytes.NewReader(payload)
@@ -94,7 +105,8 @@ func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		if keySize > uint32(r.Len()) {
+		remaining := uint64(r.Len())
+		if uint64(keySize) > remaining || uint64(valueSize) != remaining-uint64(keySize) {
 			return nil, status.Error(codes.InvalidArgument, "malformed payload")
 		}
 		key := make([]byte, keySize)
@@ -102,9 +114,6 @@ func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.
 			return nil, status.Error(codes.InvalidArgument, "malformed payload")
 		}
 
-		if valueSize > uint32(r.Len()) {
-			return nil, status.Error(codes.InvalidArgument, "malformed payload")
-		}
 		value := make([]byte, valueSize)
 		if n, _ := r.Read(value); uint32(n) != valueSize {
 			return nil, status.Error(codes.InvalidArgument, "malformed payload")
@@ -122,11 +131,11 @@ func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.
 	}
 }
 
-func (s *server) Status(_ context.Context, in *enginev1.StatusRequest) (*enginev1.StatusResponse, error) {
+func (s *server) GetOffset(_ context.Context, _ *enginev1.GetOffsetRequest) (*enginev1.GetOffsetResponse, error) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	return &enginev1.StatusResponse{Offset: s.appliedOffset}, nil
+	return &enginev1.GetOffsetResponse{Offset: s.appliedOffset}, nil
 }
 
 func (s *server) RunServer(port int) {
@@ -179,6 +188,20 @@ func (s *server) RunServer(port int) {
 	<-serverStopped
 }
 
-func CreateServer(storage Storage) server {
-	return server{storage: storage}
+func expiresAtFromTTL(ttl, now uint64) (uint64, error) {
+	if ttl == 0 || ttl > SECONDS_IN_MONTH {
+		return ttl, nil
+	}
+	if ttl > ^uint64(0)-now {
+		return 0, errors.New("ttl overflows expiration timestamp")
+	}
+	return now + ttl, nil
+}
+
+func newServer(storage Storage, timeSource TimeSource) *server {
+	return &server{storage: storage, timeSource: timeSource}
+}
+
+func CreateServer(storage Storage) *server {
+	return newServer(storage, SystemTimeSource{})
 }
