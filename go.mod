@@ -3,6 +3,7 @@ module github.com/kirillidk/distributed-kv-storage
 go 1.25.0
 
 require (
+	github.com/chzyer/readline v1.5.1
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12

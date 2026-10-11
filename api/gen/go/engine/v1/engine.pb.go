@@ -4,7 +4,7 @@
 // 	protoc        (unknown)
 // source: engine/v1/engine.proto
 
-package kvv1
+package enginev1
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -22,9 +22,11 @@ const (
 )
 
 type ApplyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Offset        uint64                 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exclusive end offset of this payload in the replication log.
+	Offset uint64 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
+	// Opaque committed command encoded by kv-engine.
+	Payload       []byte `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -109,26 +111,26 @@ func (*ApplyResponse) Descriptor() ([]byte, []int) {
 	return file_engine_v1_engine_proto_rawDescGZIP(), []int{1}
 }
 
-type StatusRequest struct {
+type GetOffsetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *StatusRequest) Reset() {
-	*x = StatusRequest{}
+func (x *GetOffsetRequest) Reset() {
+	*x = GetOffsetRequest{}
 	mi := &file_engine_v1_engine_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *StatusRequest) String() string {
+func (x *GetOffsetRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*StatusRequest) ProtoMessage() {}
+func (*GetOffsetRequest) ProtoMessage() {}
 
-func (x *StatusRequest) ProtoReflect() protoreflect.Message {
+func (x *GetOffsetRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_engine_v1_engine_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -140,32 +142,33 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
-func (*StatusRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetOffsetRequest.ProtoReflect.Descriptor instead.
+func (*GetOffsetRequest) Descriptor() ([]byte, []int) {
 	return file_engine_v1_engine_proto_rawDescGZIP(), []int{2}
 }
 
-type StatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Offset        uint64                 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
+type GetOffsetResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exclusive end offset of the last successfully applied command.
+	Offset        uint64 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *StatusResponse) Reset() {
-	*x = StatusResponse{}
+func (x *GetOffsetResponse) Reset() {
+	*x = GetOffsetResponse{}
 	mi := &file_engine_v1_engine_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *StatusResponse) String() string {
+func (x *GetOffsetResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*StatusResponse) ProtoMessage() {}
+func (*GetOffsetResponse) ProtoMessage() {}
 
-func (x *StatusResponse) ProtoReflect() protoreflect.Message {
+func (x *GetOffsetResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_engine_v1_engine_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -177,12 +180,12 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
-func (*StatusResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use GetOffsetResponse.ProtoReflect.Descriptor instead.
+func (*GetOffsetResponse) Descriptor() ([]byte, []int) {
 	return file_engine_v1_engine_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *StatusResponse) GetOffset() uint64 {
+func (x *GetOffsetResponse) GetOffset() uint64 {
 	if x != nil {
 		return x.Offset
 	}
@@ -197,13 +200,13 @@ const file_engine_v1_engine_proto_rawDesc = "" +
 	"\fApplyRequest\x12\x16\n" +
 	"\x06offset\x18\x01 \x01(\x04R\x06offset\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\"\x0f\n" +
-	"\rApplyResponse\"\x0f\n" +
-	"\rStatusRequest\"(\n" +
-	"\x0eStatusResponse\x12\x16\n" +
-	"\x06offset\x18\x01 \x01(\x04R\x06offset2\x8a\x01\n" +
+	"\rApplyResponse\"\x12\n" +
+	"\x10GetOffsetRequest\"+\n" +
+	"\x11GetOffsetResponse\x12\x16\n" +
+	"\x06offset\x18\x01 \x01(\x04R\x06offset2\x93\x01\n" +
 	"\rEngineService\x12:\n" +
-	"\x05Apply\x12\x17.engine.v1.ApplyRequest\x1a\x18.engine.v1.ApplyResponse\x12=\n" +
-	"\x06Status\x12\x18.engine.v1.StatusRequest\x1a\x19.engine.v1.StatusResponseBGZEgithub.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;kvv1b\x06proto3"
+	"\x05Apply\x12\x17.engine.v1.ApplyRequest\x1a\x18.engine.v1.ApplyResponse\x12F\n" +
+	"\tGetOffset\x12\x1b.engine.v1.GetOffsetRequest\x1a\x1c.engine.v1.GetOffsetResponseBKZIgithub.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_engine_v1_engine_proto_rawDescOnce sync.Once
@@ -219,16 +222,16 @@ func file_engine_v1_engine_proto_rawDescGZIP() []byte {
 
 var file_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_engine_v1_engine_proto_goTypes = []any{
-	(*ApplyRequest)(nil),   // 0: engine.v1.ApplyRequest
-	(*ApplyResponse)(nil),  // 1: engine.v1.ApplyResponse
-	(*StatusRequest)(nil),  // 2: engine.v1.StatusRequest
-	(*StatusResponse)(nil), // 3: engine.v1.StatusResponse
+	(*ApplyRequest)(nil),      // 0: engine.v1.ApplyRequest
+	(*ApplyResponse)(nil),     // 1: engine.v1.ApplyResponse
+	(*GetOffsetRequest)(nil),  // 2: engine.v1.GetOffsetRequest
+	(*GetOffsetResponse)(nil), // 3: engine.v1.GetOffsetResponse
 }
 var file_engine_v1_engine_proto_depIdxs = []int32{
 	0, // 0: engine.v1.EngineService.Apply:input_type -> engine.v1.ApplyRequest
-	2, // 1: engine.v1.EngineService.Status:input_type -> engine.v1.StatusRequest
+	2, // 1: engine.v1.EngineService.GetOffset:input_type -> engine.v1.GetOffsetRequest
 	1, // 2: engine.v1.EngineService.Apply:output_type -> engine.v1.ApplyResponse
-	3, // 3: engine.v1.EngineService.Status:output_type -> engine.v1.StatusResponse
+	3, // 3: engine.v1.EngineService.GetOffset:output_type -> engine.v1.GetOffsetResponse
 	2, // [2:4] is the sub-list for method output_type
 	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

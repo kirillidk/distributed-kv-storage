@@ -2,22 +2,26 @@ syntax = "proto3";
 
 package engine.v1;
 
-option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;kvv1";
+option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;enginev1";
 
 service EngineService {
   rpc Apply(ApplyRequest) returns (ApplyResponse);
-  rpc Status(StatusRequest) returns (StatusResponse);
+  rpc GetOffset(GetOffsetRequest) returns (GetOffsetResponse);
 }
 
 message ApplyRequest {
+  // Exclusive end offset of this payload in the replication log.
   uint64 offset = 1;
+
+  // Opaque committed command encoded by kv-engine.
   bytes payload = 2;
 }
 
 message ApplyResponse {}
 
-message StatusRequest {}
+message GetOffsetRequest {}
 
-message StatusResponse {
+message GetOffsetResponse {
+  // Exclusive end offset of the last successfully applied command.
   uint64 offset = 1;
 }

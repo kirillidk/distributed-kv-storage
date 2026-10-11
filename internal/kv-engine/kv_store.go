@@ -15,13 +15,13 @@ const (
 )
 
 type Storage interface {
-	Set(key string, value string, expires uint64) error
+	Set(key string, value string, expiresAt uint64) error
 	Get(key string) (string, uint64, error)
 }
 
 type StorageEntry struct {
-	value   string
-	expires uint64
+	value     string
+	expiresAt uint64
 }
 
 type MemoryStorage struct {
@@ -30,19 +30,13 @@ type MemoryStorage struct {
 	timeSource TimeSource
 }
 
-func (m *MemoryStorage) Set(key string, value string, expires uint64) error {
+func (m *MemoryStorage) Set(key string, value string, expiresAt uint64) error {
 	if key == "" {
 		return ErrEmptyKey
 	}
-	if expires == 0 {
-		expires = ^uint64(0) // maximum value
-	}
-	if expires <= SECONDS_IN_MONTH {
-		expires += m.timeSource.Now()
-	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.values[key] = StorageEntry{value, expires}
+	m.values[key] = StorageEntry{value: value, expiresAt: expiresAt}
 	return nil
 }
 
@@ -58,11 +52,10 @@ func (m *MemoryStorage) Get(key string) (string, uint64, error) {
 		return "", 0, ErrKeyNotFound
 	}
 
-	if m.timeSource.Now() >= value.expires {
+	if value.expiresAt != 0 && m.timeSource.Now() >= value.expiresAt {
 		return "", 0, ErrKeyNotFound
-	} else {
-		return value.value, value.expires, nil
 	}
+	return value.value, value.expiresAt, nil
 }
 
 func CreateMemoryStorage() Storage {

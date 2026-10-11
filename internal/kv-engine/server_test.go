@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math/rand/v2"
 	"net"
 	"sync"
 	"testing"
@@ -25,6 +24,10 @@ import (
 // ephemeral localhost port and returns connected clients.
 // It mirrors the wiring done in RunServer without blocking on signals.
 func newTestServer(t *testing.T, storage Storage) (kvv1.KVServiceClient, enginev1.EngineServiceClient, healthgrpc.HealthClient, func()) {
+	return newTestServerWithTimeSource(t, storage, SystemTimeSource{})
+}
+
+func newTestServerWithTimeSource(t *testing.T, storage Storage, timeSource TimeSource) (kvv1.KVServiceClient, enginev1.EngineServiceClient, healthgrpc.HealthClient, func()) {
 	t.Helper()
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -34,9 +37,9 @@ func newTestServer(t *testing.T, storage Storage) (kvv1.KVServiceClient, enginev
 	}
 
 	grpcServer := grpc.NewServer()
-	srv := CreateServer(storage)
-	kvv1.RegisterKVServiceServer(grpcServer, &srv)
-	enginev1.RegisterEngineServiceServer(grpcServer, &srv)
+	srv := newServer(storage, timeSource)
+	kvv1.RegisterKVServiceServer(grpcServer, srv)
+	enginev1.RegisterEngineServiceServer(grpcServer, srv)
 
 	healthcheck := health.NewServer()
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
@@ -80,6 +83,62 @@ func TestSetGetRoundTrip(t *testing.T) {
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, []byte("value1"), resp.GetValue())
+		assert.Equal(t, uint64(0), resp.GetExpiresAt())
+	}
+}
+
+func TestSetConvertsRelativeTTLToExpiresAt(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{
+		Key:   []byte("relative"),
+		Value: []byte("value"),
+		Ttl:   60,
+	})
+	assert.NoError(t, err)
+
+	resp, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("relative")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, uint64(1_060), resp.GetExpiresAt())
+	}
+
+	timeSource.AdvanceTime(60)
+	_, err = client.Get(ctx, &kvv1.GetRequest{Key: []byte("relative")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestExpiresAtFromTTL(t *testing.T) {
+	tests := []struct {
+		name    string
+		ttl     uint64
+		now     uint64
+		want    uint64
+		wantErr bool
+	}{
+		{name: "no expiration", ttl: 0, now: 1_000, want: 0},
+		{name: "relative", ttl: 60, now: 1_000, want: 1_060},
+		{name: "relative upper bound", ttl: SECONDS_IN_MONTH, now: 1_000, want: 1_000 + SECONDS_IN_MONTH},
+		{name: "absolute", ttl: SECONDS_IN_MONTH + 1, now: 1_000, want: SECONDS_IN_MONTH + 1},
+		{name: "overflow", ttl: 60, now: ^uint64(0) - 59, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := expiresAtFromTTL(test.ttl, test.now)
+			if test.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
 	}
 }
 
@@ -145,14 +204,14 @@ func encodeSetPayload(expiresAt uint64, key, value []byte) []byte {
 	return append(payload, value...)
 }
 
-func TestStatusInitialOffsetIsZero(t *testing.T) {
+func TestGetOffsetInitialValueIsZero(t *testing.T) {
 	_, client, _, cleanup := newTestServer(t, CreateMemoryStorage())
 	defer cleanup()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := client.Status(ctx, &enginev1.StatusRequest{})
+	resp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, uint64(0), resp.GetOffset())
@@ -178,7 +237,7 @@ func TestApplySuccesfulCase(t *testing.T) {
 		assert.Equal(t, []byte("applied-value"), got.GetValue())
 	}
 
-	statusResp, err := engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err := engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, wantOffset, statusResp.GetOffset())
@@ -198,11 +257,38 @@ func TestApplySuccesfulCase(t *testing.T) {
 		assert.Equal(t, []byte("second-value"), got.GetValue())
 	}
 
-	statusResp, err = engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err = engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, secondOffset, statusResp.GetOffset())
 	}
+}
+
+func TestApplyStoresAbsoluteExpiresAt(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	kvClient, engineClient, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	payload := encodeSetPayload(1_060, []byte("expiring"), []byte("value"))
+	_, err := engineClient.Apply(ctx, &enginev1.ApplyRequest{
+		Offset:  uint64(len(payload)),
+		Payload: payload,
+	})
+	assert.NoError(t, err)
+
+	response, err := kvClient.Get(ctx, &kvv1.GetRequest{Key: []byte("expiring")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, uint64(1_060), response.GetExpiresAt())
+	}
+
+	timeSource.AdvanceTime(60)
+	_, err = kvClient.Get(ctx, &kvv1.GetRequest{Key: []byte("expiring")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
 }
 
 func TestApplyIgnoresDuplicateOffset(t *testing.T) {
@@ -218,7 +304,7 @@ func TestApplyIgnoresDuplicateOffset(t *testing.T) {
 	_, err := engineClient.Apply(ctx, &enginev1.ApplyRequest{Offset: offset, Payload: payload})
 	assert.NoError(t, err)
 
-	statusResp, err := engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err := engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	var offsetAfterFirst uint64
 	if err == nil {
@@ -231,7 +317,7 @@ func TestApplyIgnoresDuplicateOffset(t *testing.T) {
 	_, err = engineClient.Apply(ctx, &enginev1.ApplyRequest{Offset: offset, Payload: payload})
 	assert.NoError(t, err)
 
-	statusResp, err = engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err = engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, offsetAfterFirst, statusResp.GetOffset())
@@ -267,7 +353,8 @@ func TestApplyMalformedPayloads(t *testing.T) {
 		{name: "value size overflowing uint32", payload: header(setEventMagic, 0, 1, ^uint32(0))},
 		{name: "no key bytes", payload: header(setEventMagic, 0, 1, 1)},
 		{name: "no value bytes", payload: append(header(setEventMagic, 0, 1, 1), 'k')},
-		{name: "key size zero with trailing bytes", payload: append(header(setEventMagic, 0, 0, 1), 'v')},
+		{name: "empty key", payload: append(header(setEventMagic, 0, 0, 1), 'v')},
+		{name: "trailing bytes", payload: append(append([]byte(nil), valid...), 0xff)},
 	}
 
 	// Every strict prefix of a known-good payload is missing a trailing
@@ -299,7 +386,7 @@ func TestApplyMalformedPayloads(t *testing.T) {
 			assert.Equal(t, codes.InvalidArgument, status.Code(err),
 				"payload %v should be rejected as InvalidArgument", tt.payload)
 
-			statusResp, err := client.Status(ctx, &enginev1.StatusRequest{})
+			statusResp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 			assert.NoError(t, err)
 			if err == nil {
 				assert.Equal(t, uint64(0), statusResp.GetOffset(),
@@ -327,12 +414,12 @@ func TestApplyInvalidOffset(t *testing.T) {
 	} {
 		_, err := client.Apply(ctx, &enginev1.ApplyRequest{Offset: offset, Payload: payload})
 		assert.Error(t, err, "offset %d should be rejected", offset)
-		assert.Equal(t, codes.InvalidArgument, status.Code(err),
-			"offset %d should be InvalidArgument", offset)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err),
+			"offset %d should be FailedPrecondition", offset)
 	}
 
 	// None of that may have moved the offset or written the key.
-	statusResp, err := client.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, uint64(0), statusResp.GetOffset())
@@ -363,7 +450,7 @@ func TestApplyFailedSetDoesNotAdvanceOffset(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, codes.InvalidArgument, status.Code(err))
 
-	statusResp, err := engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err := engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, uint64(0), statusResp.GetOffset())
@@ -381,14 +468,14 @@ func TestApplyFailedSetDoesNotAdvanceOffset(t *testing.T) {
 		assert.Equal(t, []byte("good-value"), got.GetValue())
 	}
 
-	statusResp, err = engineClient.Status(ctx, &enginev1.StatusRequest{})
+	statusResp, err = engineClient.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 	assert.NoError(t, err)
 	if err == nil {
 		assert.Equal(t, uint64(len(good)), statusResp.GetOffset())
 	}
 }
 
-func TestApplyRaces(t *testing.T) {
+func TestApplyWithConcurrentGetOffset(t *testing.T) {
 	_, client, _, cleanup := newTestServer(t, CreateMemoryStorage())
 	defer cleanup()
 
@@ -397,28 +484,53 @@ func TestApplyRaces(t *testing.T) {
 
 	payload := encodeSetPayload(0, []byte("k"), []byte("v"))
 
-	// Offset is the position after applying, so a caller tracking its own
-	// stream position advances by the length of each payload it sends.
-	wg := new(sync.WaitGroup)
-	wg.Add(10)
+	const commandCount = 1_000
+	const readerCount = 9
+	wantOffset := uint64(commandCount * len(payload))
 
-	for range 10 {
-		go func(wg *sync.WaitGroup) {
+	var wg sync.WaitGroup
+	errorsCh := make(chan error, readerCount+1)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var offset uint64
+		for range commandCount {
+			offset += uint64(len(payload))
+			if _, err := client.Apply(ctx, &enginev1.ApplyRequest{Offset: offset, Payload: payload}); err != nil {
+				errorsCh <- err
+				return
+			}
+		}
+	}()
+
+	for range readerCount {
+		wg.Add(1)
+		go func() {
 			defer wg.Done()
-			offset := 0
-			for range 1000 {
-				if rand.IntN(2) == 0 {
-					_, _ = client.Apply(ctx, &enginev1.ApplyRequest{
-						Offset:  uint64(offset),
-						Payload: payload,
-					})
-					offset += 1
-				} else {
-					_, _ = client.Status(ctx, &enginev1.StatusRequest{})
+			for range commandCount {
+				resp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
+				if err != nil {
+					errorsCh <- err
+					return
+				}
+				if resp.GetOffset() > wantOffset || resp.GetOffset()%uint64(len(payload)) != 0 {
+					errorsCh <- fmt.Errorf("invalid offset snapshot: %d", resp.GetOffset())
+					return
 				}
 			}
-		}(wg)
+		}()
 	}
 
 	wg.Wait()
+	close(errorsCh)
+	for err := range errorsCh {
+		assert.NoError(t, err)
+	}
+
+	resp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, wantOffset, resp.GetOffset())
+	}
 }
