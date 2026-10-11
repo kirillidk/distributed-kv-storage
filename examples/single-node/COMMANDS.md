@@ -63,6 +63,25 @@ cat /etc/distributed-kv/cluster.yaml
 ps
 ```
 
+## kvctl
+
+```bash
+docker compose -f examples/single-node/compose.yaml \
+  exec node-1 kvctl --address 127.0.0.1:8001
+```
+
+## Set
+
+```text
+set name distributed-kv 0
+```
+
+## Get
+
+```text
+get name
+```
+
 ## Stop
 
 ```bash

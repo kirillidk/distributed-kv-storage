@@ -13,6 +13,7 @@ COPY internal ./internal
 
 RUN CGO_ENABLED=0 go build -trimpath -o /out/repl ./cmd/repl \
     && CGO_ENABLED=0 go build -trimpath -o /out/kv-engine ./cmd/kv-engine \
+    && CGO_ENABLED=0 go build -trimpath -o /out/kvctl ./cmd/kvctl \
     && CGO_ENABLED=0 go build -trimpath -o /out/clusterstat ./cmd/clusterstat
 
 FROM alpine:3.22 AS runtime-base
@@ -21,6 +22,7 @@ RUN addgroup -S app && adduser -S -G app app
 
 COPY --from=build /out/repl /usr/local/bin/repl
 COPY --from=build /out/kv-engine /usr/local/bin/kv-engine
+COPY --from=build /out/kvctl /usr/local/bin/kvctl
 COPY --from=build /out/clusterstat /usr/local/bin/clusterstat
 
 USER app

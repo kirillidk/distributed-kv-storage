@@ -30,6 +30,22 @@ Go import path:
 import kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 ```
 
+## kvctl
+
+Start the interactive client with a KVService address:
+
+```bash
+go run ./cmd/kvctl --address 127.0.0.1:8001
+```
+
+```text
+kv> set name distributed-kv 0
+OK
+kv> get name
+value: "distributed-kv"
+expires_at: 0
+```
+
 ## Cluster manifest
 
 The cluster topology and local process settings are described in a shared
