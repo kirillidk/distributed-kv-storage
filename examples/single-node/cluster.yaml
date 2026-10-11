@@ -4,6 +4,7 @@ nodes:
       listen_addr: 0.0.0.0:7001
       connect_addr: node-1:7001
       log_dir: /var/log/distributed-kv/node-1
+      wal_path: /var/lib/repl/node-1.wal
 
     engine:
       connect_addr: node-1:8001

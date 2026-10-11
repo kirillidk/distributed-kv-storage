@@ -13,6 +13,7 @@ services:
     volumes:
       - ./cluster.yaml:/etc/distributed-kv/cluster.yaml:ro
       - node-logs:/var/log/distributed-kv
+      - node-1-wal:/var/lib/repl
     ports:
       - "7001:7001"
       - "8001:8001"
@@ -39,3 +40,4 @@ services:
 
 volumes:
   node-logs:
+  node-1-wal:

@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/health"
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
@@ -41,7 +40,7 @@ func newTestServerWithTimeSource(t *testing.T, storage Storage, timeSource TimeS
 	kvv1.RegisterKVServiceServer(grpcServer, srv)
 	enginev1.RegisterEngineServiceServer(grpcServer, srv)
 
-	healthcheck := health.NewServer()
+	healthcheck := srv.health
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
 	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 
@@ -491,9 +490,7 @@ func TestApplyWithConcurrentGetOffset(t *testing.T) {
 	var wg sync.WaitGroup
 	errorsCh := make(chan error, readerCount+1)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		var offset uint64
 		for range commandCount {
 			offset += uint64(len(payload))
@@ -502,12 +499,10 @@ func TestApplyWithConcurrentGetOffset(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 
 	for range readerCount {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range commandCount {
 				resp, err := client.GetOffset(ctx, &enginev1.GetOffsetRequest{})
 				if err != nil {
@@ -519,7 +514,7 @@ func TestApplyWithConcurrentGetOffset(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
