@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	EngineService_Apply_FullMethodName     = "/engine.v1.EngineService/Apply"
 	EngineService_GetOffset_FullMethodName = "/engine.v1.EngineService/GetOffset"
+	EngineService_SetReady_FullMethodName  = "/engine.v1.EngineService/SetReady"
 )
 
 // EngineServiceClient is the client API for EngineService service.
@@ -29,6 +30,7 @@ const (
 type EngineServiceClient interface {
 	Apply(ctx context.Context, in *ApplyRequest, opts ...grpc.CallOption) (*ApplyResponse, error)
 	GetOffset(ctx context.Context, in *GetOffsetRequest, opts ...grpc.CallOption) (*GetOffsetResponse, error)
+	SetReady(ctx context.Context, in *SetReadyRequest, opts ...grpc.CallOption) (*SetReadyResponse, error)
 }
 
 type engineServiceClient struct {
@@ -59,12 +61,23 @@ func (c *engineServiceClient) GetOffset(ctx context.Context, in *GetOffsetReques
 	return out, nil
 }
 
+func (c *engineServiceClient) SetReady(ctx context.Context, in *SetReadyRequest, opts ...grpc.CallOption) (*SetReadyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetReadyResponse)
+	err := c.cc.Invoke(ctx, EngineService_SetReady_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EngineServiceServer is the server API for EngineService service.
 // All implementations must embed UnimplementedEngineServiceServer
 // for forward compatibility.
 type EngineServiceServer interface {
 	Apply(context.Context, *ApplyRequest) (*ApplyResponse, error)
 	GetOffset(context.Context, *GetOffsetRequest) (*GetOffsetResponse, error)
+	SetReady(context.Context, *SetReadyRequest) (*SetReadyResponse, error)
 	mustEmbedUnimplementedEngineServiceServer()
 }
 
@@ -80,6 +93,9 @@ func (UnimplementedEngineServiceServer) Apply(context.Context, *ApplyRequest) (*
 }
 func (UnimplementedEngineServiceServer) GetOffset(context.Context, *GetOffsetRequest) (*GetOffsetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetOffset not implemented")
+}
+func (UnimplementedEngineServiceServer) SetReady(context.Context, *SetReadyRequest) (*SetReadyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetReady not implemented")
 }
 func (UnimplementedEngineServiceServer) mustEmbedUnimplementedEngineServiceServer() {}
 func (UnimplementedEngineServiceServer) testEmbeddedByValue()                       {}
@@ -138,6 +154,24 @@ func _EngineService_GetOffset_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EngineService_SetReady_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetReadyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EngineServiceServer).SetReady(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EngineService_SetReady_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EngineServiceServer).SetReady(ctx, req.(*SetReadyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EngineService_ServiceDesc is the grpc.ServiceDesc for EngineService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +186,10 @@ var EngineService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetOffset",
 			Handler:    _EngineService_GetOffset_Handler,
+		},
+		{
+			MethodName: "SetReady",
+			Handler:    _EngineService_SetReady_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

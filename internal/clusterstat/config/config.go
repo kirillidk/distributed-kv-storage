@@ -25,6 +25,7 @@ type nodeConfig struct {
 type replConfig struct {
 	ListenAddr  string `yaml:"listen_addr"`
 	ConnectAddr string `yaml:"connect_addr"`
+	WALPath     string `yaml:"wal_path"`
 }
 
 type engineConfig struct {

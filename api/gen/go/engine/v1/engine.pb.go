@@ -192,6 +192,87 @@ func (x *GetOffsetResponse) GetOffset() uint64 {
 	return 0
 }
 
+type SetReadyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Repl enables client requests only after WAL recovery completes.
+	Ready         bool `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetReadyRequest) Reset() {
+	*x = SetReadyRequest{}
+	mi := &file_engine_v1_engine_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetReadyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetReadyRequest) ProtoMessage() {}
+
+func (x *SetReadyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_v1_engine_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetReadyRequest.ProtoReflect.Descriptor instead.
+func (*SetReadyRequest) Descriptor() ([]byte, []int) {
+	return file_engine_v1_engine_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SetReadyRequest) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
+type SetReadyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetReadyResponse) Reset() {
+	*x = SetReadyResponse{}
+	mi := &file_engine_v1_engine_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetReadyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetReadyResponse) ProtoMessage() {}
+
+func (x *SetReadyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_engine_v1_engine_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetReadyResponse.ProtoReflect.Descriptor instead.
+func (*SetReadyResponse) Descriptor() ([]byte, []int) {
+	return file_engine_v1_engine_proto_rawDescGZIP(), []int{5}
+}
+
 var File_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_engine_v1_engine_proto_rawDesc = "" +
@@ -203,10 +284,14 @@ const file_engine_v1_engine_proto_rawDesc = "" +
 	"\rApplyResponse\"\x12\n" +
 	"\x10GetOffsetRequest\"+\n" +
 	"\x11GetOffsetResponse\x12\x16\n" +
-	"\x06offset\x18\x01 \x01(\x04R\x06offset2\x93\x01\n" +
+	"\x06offset\x18\x01 \x01(\x04R\x06offset\"'\n" +
+	"\x0fSetReadyRequest\x12\x14\n" +
+	"\x05ready\x18\x01 \x01(\bR\x05ready\"\x12\n" +
+	"\x10SetReadyResponse2\xd8\x01\n" +
 	"\rEngineService\x12:\n" +
 	"\x05Apply\x12\x17.engine.v1.ApplyRequest\x1a\x18.engine.v1.ApplyResponse\x12F\n" +
-	"\tGetOffset\x12\x1b.engine.v1.GetOffsetRequest\x1a\x1c.engine.v1.GetOffsetResponseBKZIgithub.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;enginev1b\x06proto3"
+	"\tGetOffset\x12\x1b.engine.v1.GetOffsetRequest\x1a\x1c.engine.v1.GetOffsetResponse\x12C\n" +
+	"\bSetReady\x12\x1a.engine.v1.SetReadyRequest\x1a\x1b.engine.v1.SetReadyResponseBKZIgithub.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_engine_v1_engine_proto_rawDescOnce sync.Once
@@ -220,20 +305,24 @@ func file_engine_v1_engine_proto_rawDescGZIP() []byte {
 	return file_engine_v1_engine_proto_rawDescData
 }
 
-var file_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_engine_v1_engine_proto_goTypes = []any{
 	(*ApplyRequest)(nil),      // 0: engine.v1.ApplyRequest
 	(*ApplyResponse)(nil),     // 1: engine.v1.ApplyResponse
 	(*GetOffsetRequest)(nil),  // 2: engine.v1.GetOffsetRequest
 	(*GetOffsetResponse)(nil), // 3: engine.v1.GetOffsetResponse
+	(*SetReadyRequest)(nil),   // 4: engine.v1.SetReadyRequest
+	(*SetReadyResponse)(nil),  // 5: engine.v1.SetReadyResponse
 }
 var file_engine_v1_engine_proto_depIdxs = []int32{
 	0, // 0: engine.v1.EngineService.Apply:input_type -> engine.v1.ApplyRequest
 	2, // 1: engine.v1.EngineService.GetOffset:input_type -> engine.v1.GetOffsetRequest
-	1, // 2: engine.v1.EngineService.Apply:output_type -> engine.v1.ApplyResponse
-	3, // 3: engine.v1.EngineService.GetOffset:output_type -> engine.v1.GetOffsetResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	4, // 2: engine.v1.EngineService.SetReady:input_type -> engine.v1.SetReadyRequest
+	1, // 3: engine.v1.EngineService.Apply:output_type -> engine.v1.ApplyResponse
+	3, // 4: engine.v1.EngineService.GetOffset:output_type -> engine.v1.GetOffsetResponse
+	5, // 5: engine.v1.EngineService.SetReady:output_type -> engine.v1.SetReadyResponse
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -250,7 +339,7 @@ func file_engine_v1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_engine_v1_engine_proto_rawDesc), len(file_engine_v1_engine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
