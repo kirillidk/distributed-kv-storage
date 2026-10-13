@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package repl.v1;
+
+option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1;replv1";
+
+service ReplService {
+  rpc Propose(ProposeRequest) returns (ProposeResponse);
+}
+
+message ProposeRequest {
+  // Opaque command encoded by the local engine.
+  bytes payload = 1;
+}
+
+message ProposeResponse {}
