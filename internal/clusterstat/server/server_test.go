@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -97,5 +98,78 @@ func TestHTTPShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Start did not return after Shutdown")
+	}
+}
+
+func TestComponentLogsAPI(t *testing.T) {
+	comps := []config.Component{
+		{NodeID: "node-1", Type: config.TypeKVEngine, Address: "127.0.0.1:8001"},
+	}
+	col := collector.New(comps, time.Hour, time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go col.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	s := New("127.0.0.1:0", col)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/components/node-1/kv-engine/logs", nil)
+	rr := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		NodeID string `json:"node_id"`
+		Type   string `json:"type"`
+		Logs   []struct {
+			NewStatus string `json:"new_status"`
+		} `json:"logs"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.NodeID != "node-1" || resp.Type != "kv-engine" {
+		t.Fatalf("unexpected identity: %+v", resp)
+	}
+
+	if len(resp.Logs) == 0 {
+		t.Fatal("expected log entries")
+	}
+}
+
+func TestComponentLogsNotFound(t *testing.T) {
+	col := collector.New(nil, time.Second, time.Second)
+	s := New("127.0.0.1:0", col)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/components/nope/kv-engine/logs", nil)
+	rr := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", rr.Code)
+	}
+}
+
+func TestLogsPageOK(t *testing.T) {
+	comps := []config.Component{
+		{NodeID: "node-1", Type: config.TypeRepl, Address: "127.0.0.1:9001"},
+	}
+	col := collector.New(comps, time.Hour, time.Second)
+	s := New("127.0.0.1:0", col)
+
+	req := httptest.NewRequest(http.MethodGet, "/components/node-1/repl/logs", nil)
+	rr := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type=%q", ct)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("Component logs")) {
+		t.Fatal("expected logs page html")
 	}
 }
