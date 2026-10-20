@@ -12,6 +12,7 @@ nodes:
     repl:
       listen_addr: 0.0.0.0:7001
       connect_addr: node-1:7001
+      log_dir: /var/log/distributed-kv/node-1
 
     engine:
       connect_addr: node-1:8001
@@ -37,6 +38,18 @@ Address on which the local `repl` binds its gRPC server.
 ### `nodes[].repl.connect_addr`
 
 Address other cluster components use to connect to this `repl`.
+
+### `nodes[].repl.log_dir`
+
+Optional directory for the local component logs. `repl` creates it and appends
+its own structured events to `repl.log` and the engine's stdout/stderr to
+`kv-engine.log`, in JSON Lines format. Existing files are preserved across
+engine and `repl` restarts. Relative paths use the `repl` working directory;
+each node needs its own directory owned by a single `repl` process.
+
+Omit the field to keep console-only logging. `ReplAdminService.ReadLogs` on
+the `repl` gRPC address provides paginated read access when file logging is
+enabled. See [component logs](component-logs.md) for the protocol and examples.
 
 ### `nodes[].engine.connect_addr`
 
