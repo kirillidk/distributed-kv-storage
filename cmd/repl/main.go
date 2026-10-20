@@ -47,16 +47,8 @@ func run(args []string, logger *slog.Logger) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	logger.Info(
-		"repl starting",
-		"node_id", node.ID,
-		"listen_addr", node.Repl.ListenAddr,
-		"connect_addr", node.Repl.ConnectAddr,
-		"engine_connect_addr", node.Engine.ConnectAddr,
-	)
 	if err := repl.Run(ctx, *node, logger); err != nil {
 		return fmt.Errorf("supervise node %q: %w", node.ID, err)
 	}
-	logger.Info("repl stopped", "node_id", node.ID)
 	return nil
 }

@@ -65,6 +65,17 @@ func TestCanonicalExampleManifest(t *testing.T) {
 	}
 }
 
+func TestLoadManifestLogDirectory(t *testing.T) {
+	content := strings.Replace(validManifest, "connect_addr: node-0:7001", "connect_addr: node-0:7001\n      log_dir: ./logs/node_0", 1)
+	manifest, err := LoadManifest(writeManifest(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Nodes[0].Repl.LogDir != "./logs/node_0" {
+		t.Fatalf("unexpected log directory: %q", manifest.Nodes[0].Repl.LogDir)
+	}
+}
+
 func TestLoadManifestErrors(t *testing.T) {
 	tests := []struct {
 		name    string

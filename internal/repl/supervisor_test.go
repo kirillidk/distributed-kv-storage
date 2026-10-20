@@ -39,6 +39,8 @@ func TestEngineHelperProcess(t *testing.T) {
 	file.Close()
 	fmt.Fprintln(os.Stdout, "engine ready")
 	fmt.Fprintln(os.Stderr, "engine warning")
+	fmt.Fprint(os.Stdout, "trailing stdout")
+	fmt.Fprint(os.Stderr, "trailing stderr")
 	if mode == "exit" {
 		os.Exit(7)
 	}
