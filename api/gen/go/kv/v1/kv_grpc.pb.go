@@ -19,8 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	KVService_Set_FullMethodName = "/kv.v1.KVService/Set"
-	KVService_Get_FullMethodName = "/kv.v1.KVService/Get"
+	KVService_Set_FullMethodName           = "/kv.v1.KVService/Set"
+	KVService_Get_FullMethodName           = "/kv.v1.KVService/Get"
+	KVService_Add_FullMethodName           = "/kv.v1.KVService/Add"
+	KVService_Replace_FullMethodName       = "/kv.v1.KVService/Replace"
+	KVService_Delete_FullMethodName        = "/kv.v1.KVService/Delete"
+	KVService_GetExpireTime_FullMethodName = "/kv.v1.KVService/GetExpireTime"
+	KVService_Incr_FullMethodName          = "/kv.v1.KVService/Incr"
+	KVService_Decr_FullMethodName          = "/kv.v1.KVService/Decr"
 )
 
 // KVServiceClient is the client API for KVService service.
@@ -29,6 +35,12 @@ const (
 type KVServiceClient interface {
 	Set(ctx context.Context, in *SetRequest, opts ...grpc.CallOption) (*SetResponse, error)
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	Add(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (*AddResponse, error)
+	Replace(ctx context.Context, in *ReplaceRequest, opts ...grpc.CallOption) (*ReplaceResponse, error)
+	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	GetExpireTime(ctx context.Context, in *GetExpireTimeRequest, opts ...grpc.CallOption) (*GetExpireTimeResponse, error)
+	Incr(ctx context.Context, in *IncrRequest, opts ...grpc.CallOption) (*IncrResponse, error)
+	Decr(ctx context.Context, in *DecrRequest, opts ...grpc.CallOption) (*DecrResponse, error)
 }
 
 type kVServiceClient struct {
@@ -59,12 +71,78 @@ func (c *kVServiceClient) Get(ctx context.Context, in *GetRequest, opts ...grpc.
 	return out, nil
 }
 
+func (c *kVServiceClient) Add(ctx context.Context, in *AddRequest, opts ...grpc.CallOption) (*AddResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AddResponse)
+	err := c.cc.Invoke(ctx, KVService_Add_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVServiceClient) Replace(ctx context.Context, in *ReplaceRequest, opts ...grpc.CallOption) (*ReplaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplaceResponse)
+	err := c.cc.Invoke(ctx, KVService_Replace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteResponse)
+	err := c.cc.Invoke(ctx, KVService_Delete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVServiceClient) GetExpireTime(ctx context.Context, in *GetExpireTimeRequest, opts ...grpc.CallOption) (*GetExpireTimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetExpireTimeResponse)
+	err := c.cc.Invoke(ctx, KVService_GetExpireTime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVServiceClient) Incr(ctx context.Context, in *IncrRequest, opts ...grpc.CallOption) (*IncrResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IncrResponse)
+	err := c.cc.Invoke(ctx, KVService_Incr_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *kVServiceClient) Decr(ctx context.Context, in *DecrRequest, opts ...grpc.CallOption) (*DecrResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DecrResponse)
+	err := c.cc.Invoke(ctx, KVService_Decr_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // KVServiceServer is the server API for KVService service.
 // All implementations must embed UnimplementedKVServiceServer
 // for forward compatibility.
 type KVServiceServer interface {
 	Set(context.Context, *SetRequest) (*SetResponse, error)
 	Get(context.Context, *GetRequest) (*GetResponse, error)
+	Add(context.Context, *AddRequest) (*AddResponse, error)
+	Replace(context.Context, *ReplaceRequest) (*ReplaceResponse, error)
+	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	GetExpireTime(context.Context, *GetExpireTimeRequest) (*GetExpireTimeResponse, error)
+	Incr(context.Context, *IncrRequest) (*IncrResponse, error)
+	Decr(context.Context, *DecrRequest) (*DecrResponse, error)
 	mustEmbedUnimplementedKVServiceServer()
 }
 
@@ -80,6 +158,24 @@ func (UnimplementedKVServiceServer) Set(context.Context, *SetRequest) (*SetRespo
 }
 func (UnimplementedKVServiceServer) Get(context.Context, *GetRequest) (*GetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedKVServiceServer) Add(context.Context, *AddRequest) (*AddResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Add not implemented")
+}
+func (UnimplementedKVServiceServer) Replace(context.Context, *ReplaceRequest) (*ReplaceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Replace not implemented")
+}
+func (UnimplementedKVServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedKVServiceServer) GetExpireTime(context.Context, *GetExpireTimeRequest) (*GetExpireTimeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetExpireTime not implemented")
+}
+func (UnimplementedKVServiceServer) Incr(context.Context, *IncrRequest) (*IncrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Incr not implemented")
+}
+func (UnimplementedKVServiceServer) Decr(context.Context, *DecrRequest) (*DecrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Decr not implemented")
 }
 func (UnimplementedKVServiceServer) mustEmbedUnimplementedKVServiceServer() {}
 func (UnimplementedKVServiceServer) testEmbeddedByValue()                   {}
@@ -138,6 +234,114 @@ func _KVService_Get_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _KVService_Add_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AddRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).Add(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_Add_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).Add(ctx, req.(*AddRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVService_Replace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).Replace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_Replace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).Replace(ctx, req.(*ReplaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVService_Delete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).Delete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_Delete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).Delete(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVService_GetExpireTime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExpireTimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).GetExpireTime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_GetExpireTime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).GetExpireTime(ctx, req.(*GetExpireTimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVService_Incr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IncrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).Incr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_Incr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).Incr(ctx, req.(*IncrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _KVService_Decr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(KVServiceServer).Decr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: KVService_Decr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(KVServiceServer).Decr(ctx, req.(*DecrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // KVService_ServiceDesc is the grpc.ServiceDesc for KVService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +356,30 @@ var KVService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Get",
 			Handler:    _KVService_Get_Handler,
+		},
+		{
+			MethodName: "Add",
+			Handler:    _KVService_Add_Handler,
+		},
+		{
+			MethodName: "Replace",
+			Handler:    _KVService_Replace_Handler,
+		},
+		{
+			MethodName: "Delete",
+			Handler:    _KVService_Delete_Handler,
+		},
+		{
+			MethodName: "GetExpireTime",
+			Handler:    _KVService_GetExpireTime_Handler,
+		},
+		{
+			MethodName: "Incr",
+			Handler:    _KVService_Incr_Handler,
+		},
+		{
+			MethodName: "Decr",
+			Handler:    _KVService_Decr_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
