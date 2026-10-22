@@ -474,6 +474,350 @@ func TestApplyFailedSetDoesNotAdvanceOffset(t *testing.T) {
 	}
 }
 
+func TestAdd(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.Add(ctx, &kvv1.AddRequest{
+		Key:   []byte("add-key"),
+		Value: []byte("add-value"),
+		Ttl:   60,
+	})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.True(t, resp.GetSuccess())
+	}
+
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("add-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("add-value"), got.GetValue())
+		assert.Equal(t, uint64(1_060), got.GetExpiresAt(), "Add must convert relative TTL")
+	}
+
+	// Adding an existing key must fail without overwriting it.
+	resp, err = client.Add(ctx, &kvv1.AddRequest{
+		Key:   []byte("add-key"),
+		Value: []byte("other-value"),
+	})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.False(t, resp.GetSuccess())
+	}
+
+	got, err = client.Get(ctx, &kvv1.GetRequest{Key: []byte("add-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("add-value"), got.GetValue())
+		assert.Equal(t, uint64(1_060), got.GetExpiresAt())
+	}
+
+	// Once the key expires, Add succeeds again.
+	timeSource.SetTime(1_060)
+	resp, err = client.Add(ctx, &kvv1.AddRequest{Key: []byte("add-key"), Value: []byte("after-expiry")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.True(t, resp.GetSuccess())
+	}
+}
+
+func TestAddEmptyKey(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Add(ctx, &kvv1.AddRequest{Key: []byte(""), Value: []byte("value")})
+	assert.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestReplace(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Replacing a missing key must fail and must not create it.
+	resp, err := client.Replace(ctx, &kvv1.ReplaceRequest{
+		Key:   []byte("replace-key"),
+		Value: []byte("value"),
+	})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.False(t, resp.GetSuccess())
+	}
+
+	_, err = client.Get(ctx, &kvv1.GetRequest{Key: []byte("replace-key")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("replace-key"), Value: []byte("original")})
+	assert.NoError(t, err)
+
+	resp, err = client.Replace(ctx, &kvv1.ReplaceRequest{
+		Key:   []byte("replace-key"),
+		Value: []byte("replaced"),
+		Ttl:   60,
+	})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.True(t, resp.GetSuccess())
+	}
+
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("replace-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("replaced"), got.GetValue())
+		assert.Equal(t, uint64(1_060), got.GetExpiresAt(), "Replace must convert relative TTL")
+	}
+}
+
+func TestReplaceEmptyKey(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Replace(ctx, &kvv1.ReplaceRequest{Key: []byte(""), Value: []byte("value")})
+	assert.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestDelete(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Deleting a missing key is not an error, it just reports false.
+	resp, err := client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte("delete-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.False(t, resp.GetSuccess())
+	}
+
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("delete-key"), Value: []byte("value")})
+	assert.NoError(t, err)
+
+	resp, err = client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte("delete-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.True(t, resp.GetSuccess())
+	}
+
+	_, err = client.Get(ctx, &kvv1.GetRequest{Key: []byte("delete-key")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	// A second delete reports that there was nothing left to remove.
+	resp, err = client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte("delete-key")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.False(t, resp.GetSuccess())
+	}
+}
+
+func TestDeleteEmptyKey(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte("")})
+	assert.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestGetExpireTime(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("forever"), Value: []byte("value")})
+	assert.NoError(t, err)
+
+	resp, err := client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("forever")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Zero(t, resp.GetExpiresAt())
+	}
+
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("expiring"), Value: []byte("value"), Ttl: 60})
+	assert.NoError(t, err)
+
+	resp, err = client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("expiring")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, uint64(1_060), resp.GetExpiresAt())
+	}
+
+	// Expired keys report NotFound.
+	timeSource.SetTime(1_060)
+	_, err = client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("expiring")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	_, err = client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("missing")})
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetExpireTimeEmptyKey(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("")})
+	assert.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+}
+
+func TestIncr(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("counter"), Value: []byte("10"), Ttl: 60})
+	assert.NoError(t, err)
+
+	resp, err := client.Incr(ctx, &kvv1.IncrRequest{Key: []byte("counter"), Delta: 5})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, uint64(15), resp.GetValue())
+	}
+
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("counter")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("15"), got.GetValue())
+		assert.Equal(t, uint64(1_060), got.GetExpiresAt(), "Incr must preserve the expiration")
+	}
+}
+
+func TestIncrErrors(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tests := []struct {
+		name string
+		key  []byte
+		want codes.Code
+	}{
+		{name: "empty key", key: []byte(""), want: codes.InvalidArgument},
+		{name: "missing key", key: []byte("missing"), want: codes.NotFound},
+		{name: "not a number", key: []byte("text"), want: codes.FailedPrecondition},
+		{name: "overflow", key: []byte("max"), want: codes.InvalidArgument},
+	}
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("text"), Value: []byte("not-a-number")})
+	assert.NoError(t, err)
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("max"), Value: []byte("18446744073709551615")})
+	assert.NoError(t, err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.Incr(ctx, &kvv1.IncrRequest{Key: tt.key, Delta: 1})
+			assert.Error(t, err)
+			assert.Equal(t, tt.want, status.Code(err))
+		})
+	}
+
+	// A failed increment must not modify the stored value.
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("max")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("18446744073709551615"), got.GetValue())
+	}
+}
+
+func TestDecr(t *testing.T) {
+	timeSource := &TestTimeSource{t: 1_000}
+	storage := &MemoryStorage{values: make(map[string]StorageEntry), timeSource: timeSource}
+	client, _, _, cleanup := newTestServerWithTimeSource(t, storage, timeSource)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("counter"), Value: []byte("10"), Ttl: 60})
+	assert.NoError(t, err)
+
+	resp, err := client.Decr(ctx, &kvv1.DecrRequest{Key: []byte("counter"), Delta: 4})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, uint64(6), resp.GetValue())
+	}
+
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("counter")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("6"), got.GetValue())
+		assert.Equal(t, uint64(1_060), got.GetExpiresAt(), "Decr must preserve the expiration")
+	}
+}
+
+func TestDecrErrors(t *testing.T) {
+	client, _, _, cleanup := newTestServer(t, CreateMemoryStorage())
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tests := []struct {
+		name  string
+		key   []byte
+		delta uint64
+		want  codes.Code
+	}{
+		{name: "empty key", key: []byte(""), delta: 1, want: codes.InvalidArgument},
+		{name: "missing key", key: []byte("missing"), delta: 1, want: codes.NotFound},
+		{name: "not a number", key: []byte("text"), delta: 1, want: codes.FailedPrecondition},
+		{name: "underflow", key: []byte("small"), delta: 2, want: codes.InvalidArgument},
+	}
+
+	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("text"), Value: []byte("not-a-number")})
+	assert.NoError(t, err)
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("small"), Value: []byte("1")})
+	assert.NoError(t, err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.Decr(ctx, &kvv1.DecrRequest{Key: tt.key, Delta: tt.delta})
+			assert.Error(t, err)
+			assert.Equal(t, tt.want, status.Code(err))
+		})
+	}
+
+	// A failed decrement must not modify the stored value.
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("small")})
+	assert.NoError(t, err)
+	if err == nil {
+		assert.Equal(t, []byte("1"), got.GetValue())
+	}
+}
+
 func TestApplyWithConcurrentGetOffset(t *testing.T) {
 	_, client, _, cleanup := newTestServer(t, CreateMemoryStorage())
 	defer cleanup()

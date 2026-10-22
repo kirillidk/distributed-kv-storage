@@ -7,6 +7,12 @@ option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v
 service KVService {
   rpc Set(SetRequest) returns (SetResponse);
   rpc Get(GetRequest) returns (GetResponse);
+  rpc Add(AddRequest) returns (AddResponse);
+  rpc Replace(ReplaceRequest) returns (ReplaceResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc GetExpireTime(GetExpireTimeRequest) returns (GetExpireTimeResponse);
+  rpc Incr(IncrRequest) returns (IncrResponse);
+  rpc Decr(DecrRequest) returns (DecrResponse);
 }
 
 message SetRequest {
@@ -33,4 +39,79 @@ message GetResponse {
 
   // Absolute Unix timestamp in seconds. Zero means no expiration.
   uint64 expires_at = 2;
+}
+
+message AddRequest {
+  // Must not be empty
+  bytes key = 1;
+
+  // May be empty
+  bytes value = 2;
+
+  // Expiration in seconds. Zero means no expiration; values up to 30 days
+  // are relative, while larger values are Unix timestamps
+  uint64 ttl = 3;
+}
+
+message AddResponse {
+  bool success = 1;
+}
+
+message ReplaceRequest {
+  // Must not be empty
+  bytes key = 1;
+
+  // May be empty
+  bytes value = 2;
+
+  // Expiration in seconds. Zero means no expiration; values up to 30 days
+  // are relative, while larger values are Unix timestamps
+  uint64 ttl = 3;
+}
+
+message ReplaceResponse {
+  bool success = 1;
+}
+
+message DeleteRequest {
+  // Must not be empty
+  bytes key = 1;
+}
+
+message DeleteResponse {
+  bool success = 1;
+}
+
+message GetExpireTimeRequest {
+  // Must not be empty
+  bytes key = 1;
+}
+
+message GetExpireTimeResponse {
+  // Absolute Unix timestamp in seconds. Zero means no expiration.
+  uint64 expires_at = 1;
+}
+
+message IncrRequest {
+  // Must not be empty
+  bytes key = 1;
+
+  // Amount to increment by. Must be positive.
+  uint64 delta = 2;
+}
+
+message IncrResponse {
+  uint64 value = 1;
+}
+
+message DecrRequest {
+  // Must not be empty
+  bytes key = 1;
+
+  // Amount to decrement by. Must be positive.
+  uint64 delta = 2;
+}
+
+message DecrResponse {
+  uint64 value = 1;
 }
