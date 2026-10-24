@@ -14,9 +14,12 @@ import (
 	"testing"
 	"time"
 
+	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 func TestEngineHelperProcess(t *testing.T) {
@@ -119,6 +122,74 @@ func TestRunServesHealthThroughEngineRestartAndShutdown(t *testing.T) {
 	status, err = watch.Recv()
 	if err != nil || status.Status != healthpb.HealthCheckResponse_NOT_SERVING {
 		t.Fatalf("shutdown health status = %v, error = %v", status, err)
+	}
+}
+
+func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
+	t.Setenv("REPL_TEST_ENGINE", "1")
+	dir := t.TempDir()
+	starts := filepath.Join(dir, "starts")
+	t.Setenv("REPL_TEST_STARTS", starts)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The helper exits without serving EngineService, so recovery stays pending.
+	node := testNode("exit")
+	node.Repl.WALPath = filepath.Join(dir, "wal")
+	node.Repl.LogDir = filepath.Join(dir, "logs")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("supervisor did not stop")
+		}
+	})
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	requestCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	client := healthpb.NewHealthClient(conn)
+	watch, err := client.Watch(requestCtx, &healthpb.HealthCheckRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := watch.Recv()
+	if err == nil && state.Status == healthpb.HealthCheckResponse_NOT_SERVING {
+		state, err = watch.Recv()
+	}
+	if err != nil || state.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("supervisor health during recovery: %v, %v", state, err)
+	}
+	waitForStarts(t, starts, 2)
+	for _, test := range []struct {
+		service string
+		want    healthpb.HealthCheckResponse_ServingStatus
+	}{
+		{"", healthpb.HealthCheckResponse_SERVING},
+		{replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING},
+	} {
+		state, err := client.Check(requestCtx, &healthpb.HealthCheckRequest{Service: test.service})
+		if err != nil || state.GetStatus() != test.want {
+			t.Errorf("health %q after engine restart = %v, %v", test.service, state, err)
+		}
+	}
+	if _, err := replv1.NewReplServiceClient(conn).Propose(requestCtx, &replv1.ProposeRequest{Payload: []byte("not ready")}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("Propose during recovery: %v", err)
+	}
+	page, err := replv1.NewReplAdminServiceClient(conn).ReadLogs(requestCtx, &replv1.ReadLogsRequest{Component: replv1.LogComponent_LOG_COMPONENT_REPL})
+	if err != nil || !strings.Contains(string(page.GetData()), "repl starting") {
+		t.Fatalf("logs unavailable during recovery: %v, %v", page, err)
 	}
 }
 

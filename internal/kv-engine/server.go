@@ -16,6 +16,8 @@ import (
 
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
+	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -30,6 +32,9 @@ type server struct {
 	timeSource    TimeSource
 	appliedOffset uint64
 	lock          sync.RWMutex
+	proposer      replv1.ReplServiceClient
+	ready         bool
+	health        *health.Server
 }
 
 const setEventMagic uint32 = 0x6f825fba
@@ -45,10 +50,27 @@ func convertError(e error) error {
 	}
 }
 
-func (s *server) Set(_ context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
+func (s *server) Set(ctx context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
+	if !s.isReady() {
+		return nil, status.Error(codes.Unavailable, "engine recovery is in progress")
+	}
+	if len(in.Key) == 0 {
+		return nil, convertError(ErrEmptyKey)
+	}
 	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if s.proposer != nil {
+		payload, err := encodeSetEvent(in.Key, in.Value, expiresAt)
+		if err != nil {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
+		// Do not hold the Apply lock while calling repl: Propose calls back into Apply.
+		if _, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{Payload: payload}); err != nil {
+			return nil, err
+		}
+		return &kvv1.SetResponse{}, nil
 	}
 	err = s.storage.Set(string(in.Key), string(in.Value), expiresAt)
 	if err != nil {
@@ -58,6 +80,9 @@ func (s *server) Set(_ context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse,
 }
 
 func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse, error) {
+	if !s.isReady() {
+		return nil, status.Error(codes.Unavailable, "engine recovery is in progress")
+	}
 	value, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		return nil, convertError(err)
@@ -138,6 +163,27 @@ func (s *server) GetOffset(_ context.Context, _ *enginev1.GetOffsetRequest) (*en
 	return &enginev1.GetOffsetResponse{Offset: s.appliedOffset}, nil
 }
 
+func (s *server) isReady() bool {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	return s.ready
+}
+
+func (s *server) SetReady(ctx context.Context, in *enginev1.SetReadyRequest) (*enginev1.SetReadyResponse, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	s.ready = in.Ready
+	state := healthgrpc.HealthCheckResponse_NOT_SERVING
+	if s.ready {
+		state = healthgrpc.HealthCheckResponse_SERVING
+	}
+	s.health.SetServingStatus("", state)
+	return &enginev1.SetReadyResponse{}, nil
+}
+
 func (s *server) RunServer(port int) {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
@@ -147,18 +193,14 @@ func (s *server) RunServer(port int) {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.MaxRecvMsgSize(replication.MaxMessageSize))
 	kvv1.RegisterKVServiceServer(grpcServer, s)
 	enginev1.RegisterEngineServiceServer(grpcServer, s)
-	healthcheck := health.NewServer()
-	healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+	healthcheck := s.health
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
 
 	serverStopped := make(chan struct{}, 1)
 	go func() {
-		healthcheck.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
-		log.Println("state -> SERVING")
-
 		<-signalChan
 		log.Println("Shutting down...")
 		healthcheck.Shutdown()
@@ -199,9 +241,35 @@ func expiresAtFromTTL(ttl, now uint64) (uint64, error) {
 }
 
 func newServer(storage Storage, timeSource TimeSource) *server {
-	return &server{storage: storage, timeSource: timeSource}
+	s := &server{storage: storage, timeSource: timeSource, ready: true, health: health.NewServer()}
+	s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
+	return s
 }
 
 func CreateServer(storage Storage) *server {
 	return newServer(storage, SystemTimeSource{})
+}
+
+func CreateServerWithProposer(storage Storage, proposer replv1.ReplServiceClient) *server {
+	s := CreateServer(storage)
+	s.proposer = proposer
+	if proposer != nil {
+		s.ready = false
+		s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+	}
+	return s
+}
+
+func encodeSetEvent(key, value []byte, expiresAt uint64) ([]byte, error) {
+	if uint64(len(key))+uint64(len(value))+20 > replication.MaxPayloadSize {
+		return nil, errors.New("Set payload is too large")
+	}
+	payload := make([]byte, 20+len(key)+len(value))
+	binary.BigEndian.PutUint32(payload, setEventMagic)
+	binary.BigEndian.PutUint64(payload[4:], expiresAt)
+	binary.BigEndian.PutUint32(payload[12:], uint32(len(key)))
+	binary.BigEndian.PutUint32(payload[16:], uint32(len(value)))
+	copy(payload[20:], key)
+	copy(payload[20+len(key):], value)
+	return payload, nil
 }

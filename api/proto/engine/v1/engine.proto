@@ -7,6 +7,7 @@ option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/engi
 service EngineService {
   rpc Apply(ApplyRequest) returns (ApplyResponse);
   rpc GetOffset(GetOffsetRequest) returns (GetOffsetResponse);
+  rpc SetReady(SetReadyRequest) returns (SetReadyResponse);
 }
 
 message ApplyRequest {
@@ -25,3 +26,10 @@ message GetOffsetResponse {
   // Exclusive end offset of the last successfully applied command.
   uint64 offset = 1;
 }
+
+message SetReadyRequest {
+  // Repl enables client requests only after WAL recovery completes.
+  bool ready = 1;
+}
+
+message SetReadyResponse {}

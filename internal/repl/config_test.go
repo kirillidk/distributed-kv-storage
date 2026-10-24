@@ -63,6 +63,9 @@ func TestCanonicalExampleManifest(t *testing.T) {
 	if len(manifest.Nodes) != 1 || manifest.Nodes[0].ID != "node-1" {
 		t.Fatalf("unexpected canonical manifest: %+v", manifest)
 	}
+	if manifest.Nodes[0].Repl.WALPath == "" || manifest.Nodes[0].Repl.LogDir == "" {
+		t.Fatal("single-node example must configure both WAL and component logs")
+	}
 }
 
 func TestLoadManifestLogDirectory(t *testing.T) {
