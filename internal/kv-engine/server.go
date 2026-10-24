@@ -45,6 +45,10 @@ func convertError(e error) error {
 		return status.Error(codes.InvalidArgument, e.Error())
 	case errors.Is(e, ErrKeyNotFound):
 		return status.Error(codes.NotFound, e.Error())
+	case errors.Is(e, ErrNotANumber):
+		return status.Error(codes.FailedPrecondition, e.Error())
+	case errors.Is(e, ErrOverflow):
+		return status.Error(codes.InvalidArgument, e.Error())
 	default:
 		return status.Error(codes.Internal, e.Error())
 	}
@@ -88,6 +92,62 @@ func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse,
 		return nil, convertError(err)
 	}
 	return &kvv1.GetResponse{Value: []byte(value), ExpiresAt: expiresAt}, nil
+}
+
+func (s *server) GetExpireTime(_ context.Context, in *kvv1.GetExpireTimeRequest) (*kvv1.GetExpireTimeResponse, error) {
+	_, expiresAt, err := s.storage.Get(string(in.Key))
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.GetExpireTimeResponse{ExpiresAt: expiresAt}, nil
+}
+
+func (s *server) Add(_ context.Context, in *kvv1.AddRequest) (*kvv1.AddResponse, error) {
+	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	success, err := s.storage.Add(string(in.Key), string(in.Value), expiresAt)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.AddResponse{Success: success}, nil
+}
+
+func (s *server) Replace(_ context.Context, in *kvv1.ReplaceRequest) (*kvv1.ReplaceResponse, error) {
+	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	success, err := s.storage.Replace(string(in.Key), string(in.Value), expiresAt)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.ReplaceResponse{Success: success}, nil
+}
+
+func (s *server) Delete(_ context.Context, in *kvv1.DeleteRequest) (*kvv1.DeleteResponse, error) {
+	success, err := s.storage.Delete(string(in.Key))
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.DeleteResponse{Success: success}, nil
+}
+
+func (s *server) Incr(_ context.Context, in *kvv1.IncrRequest) (*kvv1.IncrResponse, error) {
+	newValue, err := s.storage.Incr(string(in.Key), in.Delta)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.IncrResponse{Value: newValue}, nil
+}
+
+func (s *server) Decr(_ context.Context, in *kvv1.DecrRequest) (*kvv1.DecrResponse, error) {
+	newValue, err := s.storage.Decr(string(in.Key), in.Delta)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return &kvv1.DecrResponse{Value: newValue}, nil
 }
 
 func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.ApplyResponse, error) {
