@@ -41,15 +41,12 @@ Address other cluster components use to connect to this `repl`.
 
 ### `nodes[].repl.log_dir`
 
-Optional directory for the local component logs. `repl` creates it and appends
-its own structured events to `repl.log` and the engine's stdout/stderr to
-`kv-engine.log`, in JSON Lines format. Existing files are preserved across
-engine and `repl` restarts. Relative paths use the `repl` working directory;
-each node needs its own directory owned by a single `repl` process.
+Optional directory for `repl.log` (supervisor events) and `kv-engine.log`
+(engine stdout/stderr). Files use JSON Lines and are appended to across
+restarts. Relative paths use the `repl` working directory.
 
-Omit the field to keep console-only logging. `ReplAdminService.ReadLogs` on
-the `repl` gRPC address provides paginated read access when file logging is
-enabled. See [component logs](component-logs.md) for the protocol and examples.
+Omit the field for console-only logging. Files are available through
+[`ReplAdminService.ReadLogs`](../api/proto/repl/v1/admin.proto).
 
 ### `nodes[].engine.connect_addr`
 

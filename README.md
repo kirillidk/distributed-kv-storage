@@ -70,15 +70,6 @@ nodes:
 
 See [the manifest documentation](docs/manifest.md) for the field descriptions.
 
-## Component logs
-
-Set `nodes[].repl.log_dir` to append the supervisor's events to `repl.log`
-and the engine's stdout/stderr to `kv-engine.log`. `repl` exposes both files
-through the read-only `ReplAdminService.ReadLogs` RPC. The single-node Docker
-example keeps the files in a persistent volume.
-
-See [component logs](docs/component-logs.md) for configuration and pagination.
-
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are
