@@ -15,7 +15,7 @@ import (
 
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
-	"github.com/kirillidk/distributed-kv-storage/internal/replication"
+	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
@@ -78,6 +78,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 			return fmt.Errorf("create engine client: %w", err)
 		}
 		defer conn.Close()
+		healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
 		proposals = &proposalServer{
 			wal: wal, engine: enginev1.NewEngineServiceClient(conn),
 			setReady: func(ready bool) {
@@ -85,7 +86,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 				if ready {
 					state = healthpb.HealthCheckResponse_SERVING
 				}
-				healthServer.SetServingStatus("", state)
+				healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)
 			},
 		}
 		replv1.RegisterReplServiceServer(server, proposals)
@@ -97,9 +98,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	supervisorDone := make(chan error, 1)
 	go func() { supervisorDone <- supervise(supervisorCtx, node, logger, engineLogger, proposals) }()
-	if proposals == nil {
-		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-	}
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	logger.Info("repl health serving", "address", listener.Addr().String())
 
 	supervisorFinished := false

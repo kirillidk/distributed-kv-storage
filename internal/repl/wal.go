@@ -140,11 +140,17 @@ func (w *WAL) scan(after uint64, apply func(uint64, []byte) error) error {
 			return err
 		}
 		size := int64(binary.BigEndian.Uint32(header))
+		offset := binary.BigEndian.Uint64(header[4:])
+		validOffset := size != 0 && uint64(size) <= math.MaxUint64-last && offset == last+uint64(size)
 		length := int64(walHeaderSize+walChecksumSize) + size
 		if length > info.Size()-position {
+			// A complete but inconsistent header is corrupt, not an interrupted
+			// append. Never truncate committed records because size was damaged.
+			if !validOffset {
+				return fmt.Errorf("%w at byte %d", ErrOffset, position)
+			}
 			break
 		}
-		offset := binary.BigEndian.Uint64(header[4:])
 		hash.Reset()
 		hash.Write(header)
 		reader := io.NewSectionReader(w.file, position+walHeaderSize, size)
@@ -163,7 +169,7 @@ func (w *WAL) scan(after uint64, apply func(uint64, []byte) error) error {
 		if binary.BigEndian.Uint32(checksum[:]) != hash.Sum32() {
 			return fmt.Errorf("%w at byte %d", ErrChecksum, position)
 		}
-		if size == 0 || uint64(size) > math.MaxUint64-last || offset != last+uint64(size) {
+		if !validOffset {
 			return fmt.Errorf("%w at byte %d", ErrOffset, position)
 		}
 		if offset == after {

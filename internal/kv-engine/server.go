@@ -17,7 +17,7 @@ import (
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
-	"github.com/kirillidk/distributed-kv-storage/internal/replication"
+	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"

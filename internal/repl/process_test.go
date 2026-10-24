@@ -16,6 +16,7 @@ import (
 
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
+	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -48,8 +49,9 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	walPath := filepath.Join(dir, "node.wal")
+	logDir := filepath.Join(dir, "component-logs")
 	manifestPath := filepath.Join(dir, "cluster.yaml")
-	manifest := fmt.Sprintf("nodes:\n  - id: smoke\n    repl:\n      listen_addr: %s\n      connect_addr: %s\n      wal_path: %s\n    engine:\n      connect_addr: %s\n      command: [%s, --port, '%s']\n      restart_delay: 100ms\n      shutdown_timeout: 2s\n", replAddr, replAddr, walPath, engineAddr, filepath.Join(dir, "kv-engine"), port)
+	manifest := fmt.Sprintf("nodes:\n  - id: smoke\n    repl:\n      listen_addr: %s\n      connect_addr: %s\n      wal_path: %s\n      log_dir: %s\n    engine:\n      connect_addr: %s\n      command: [%s, --port, '%s']\n      restart_delay: 100ms\n      shutdown_timeout: 2s\n", replAddr, replAddr, walPath, logDir, engineAddr, filepath.Join(dir, "kv-engine"), port)
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,10 +121,10 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	}
 	log1 := start("first.log")
 	replConn, engineConn := connect(replAddr), connect(engineAddr)
-	poll("repl never became ready", func() bool {
+	poll("proposal service never became ready", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		r, err := healthpb.NewHealthClient(replConn).Check(ctx, &healthpb.HealthCheckRequest{})
+		r, err := healthpb.NewHealthClient(replConn).Check(ctx, &healthpb.HealthCheckRequest{Service: replv1.ReplService_ServiceDesc.ServiceName})
 		return err == nil && r.Status == healthpb.HealthCheckResponse_SERVING
 	})
 	firstPID := enginePID(log1, 1)
@@ -171,7 +173,15 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			r, err := enginev1.NewEngineServiceClient(engineConn).GetOffset(ctx, &enginev1.GetOffsetRequest{})
-			return err == nil && r.Offset == expected
+			if err != nil || r.Offset != expected {
+				return false
+			}
+			engineState, err := healthpb.NewHealthClient(engineConn).Check(ctx, &healthpb.HealthCheckRequest{})
+			if err != nil || engineState.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+				return false
+			}
+			proposalState, err := healthpb.NewHealthClient(replConn).Check(ctx, &healthpb.HealthCheckRequest{Service: replv1.ReplService_ServiceDesc.ServiceName})
+			return err == nil && proposalState.GetStatus() == healthpb.HealthCheckResponse_SERVING
 		})
 		t.Logf("%s: appliedOffset=%d before any Set/Get", stage, expected)
 	}

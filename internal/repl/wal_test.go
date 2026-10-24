@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -150,6 +151,57 @@ func TestWALChecksumMismatchDoesNotTruncate(t *testing.T) {
 		}
 		if !bytes.Equal(actual, data) {
 			t.Fatal("corrupt complete record was changed")
+		}
+	}
+}
+
+func TestWALCorruptPayloadSizeDoesNotTruncate(t *testing.T) {
+	for record := range 2 {
+		for sizeByte := range 4 {
+			for _, onOpen := range []bool{true, false} {
+				t.Run(fmt.Sprintf("record=%d/byte=%d/open=%t", record, sizeByte, onOpen), func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "wal")
+					w := openTestWAL(t, path)
+					appendTestWAL(t, w, []byte("data"))
+					appendTestWAL(t, w, []byte("next"))
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if onOpen {
+						if err := w.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					const recordSize = walHeaderSize + 4 + walChecksumSize
+					data[record*recordSize+sizeByte] ^= 1
+					if err := os.WriteFile(path, data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if onOpen {
+						var reopened *WAL
+						reopened, err = OpenWAL(path)
+						if reopened != nil {
+							reopened.Close()
+						}
+					} else {
+						err = w.Replay(0, nil)
+						if w.LastOffset() != 8 {
+							t.Error("corruption changed lastOffset")
+						}
+					}
+					if !errors.Is(err, ErrChecksum) && !errors.Is(err, ErrOffset) {
+						t.Errorf("expected corruption error, got %v", err)
+					}
+					actual, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(actual, data) {
+						t.Errorf("corrupt log was changed: bytes before=%d after=%d", len(data), len(actual))
+					}
+				})
+			}
 		}
 	}
 }

@@ -63,9 +63,11 @@ overrides it. Without `wal_path`, repl serves health and supervises an in-memory
 engine.
 
 At every engine start, repl replays the missing log suffix using `GetOffset` and
-`Apply`. During recovery, engine Set/Get and repl Propose return Unavailable,
-and both components report NOT_SERVING. Repl calls `EngineService.SetReady` to
-enable client requests after replay finishes. Every engine RPC made by repl has
+`Apply`. During recovery, engine Set/Get and repl Propose return Unavailable.
+The engine and the named `repl.v1.ReplService` Health service report NOT_SERVING;
+the default repl Health service stays SERVING while its supervisor runs.
+Repl calls `EngineService.SetReady` to enable client requests after replay finishes.
+Every engine RPC made by repl has
 a one-second timeout; the whole log has no fixed time limit. Replay runs in the background,
 independently of client requests.
 
