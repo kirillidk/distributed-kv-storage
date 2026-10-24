@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package repl.v1;
+
+option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1;replv1";
+
+// ReplAdminService exposes diagnostic logs owned by the local repl.
+service ReplAdminService {
+  rpc ReadLogs(ReadLogsRequest) returns (ReadLogsResponse);
+}
+
+enum LogComponent {
+  LOG_COMPONENT_UNSPECIFIED = 0;
+  LOG_COMPONENT_REPL = 1;
+  LOG_COMPONENT_KV_ENGINE = 2;
+}
+
+message ReadLogsRequest {
+  LogComponent component = 1;
+
+  // Byte position in the component's JSON Lines file. Zero reads from the start.
+  // This is independent of replication log offsets.
+  uint64 offset = 2;
+
+  // Maximum bytes to return. Zero defaults to 64 KiB; the maximum is 1 MiB.
+  uint32 max_bytes = 3;
+}
+
+message ReadLogsResponse {
+  // Raw UTF-8 JSON Lines bytes. Pages may split a record or UTF-8 character;
+  // concatenate pages before decoding incomplete records.
+  bytes data = 1;
+
+  // Pass this byte position as offset in the next request.
+  uint64 next_offset = 2;
+
+  // No more bytes existed at the time of this read. Further writes may follow;
+  // poll again at next_offset to receive them.
+  bool eof = 3;
+}

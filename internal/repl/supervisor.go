@@ -13,41 +13,73 @@ import (
 	"syscall"
 	"time"
 
+	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run serves node health and supervises the local engine until ctx is canceled.
+// Run serves node health and logs, and supervises the local engine until ctx is canceled.
 func Run(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
-	listener, err := net.Listen("tcp", node.Repl.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
-	}
-	return runOnListener(ctx, node, logger, listener)
+	return runOnListener(ctx, node, logger, nil)
 }
 
-func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) error {
+func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) (runErr error) {
+	if listener != nil {
+		defer listener.Close()
+	}
+	var logs *componentLogs
+	var logErrors <-chan error
+	engineLogger := logger
+	if node.Repl.LogDir != "" {
+		var err error
+		logs, err = openComponentLogs(node.Repl.LogDir)
+		if err != nil {
+			return err
+		}
+		defer func() { runErr = errors.Join(runErr, logs.Close()) }()
+		logErrors = logs.errors
+		engineLogger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.engine, nil)})
+		logger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.repl, nil)})
+	}
+	logger.Info("repl starting", "node_id", node.ID, "listen_addr", node.Repl.ListenAddr,
+		"connect_addr", node.Repl.ConnectAddr, "engine_connect_addr", node.Engine.ConnectAddr)
+	defer func() {
+		if runErr != nil {
+			logger.Error("repl failed", "node_id", node.ID, "error", runErr)
+		} else {
+			logger.Info("repl stopped", "node_id", node.ID)
+		}
+	}()
+	if listener == nil {
+		var err error
+		listener, err = net.Listen("tcp", node.Repl.ListenAddr)
+		if err != nil {
+			return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
+		}
+		defer listener.Close()
+	}
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	server := grpc.NewServer()
+	replv1.RegisterReplAdminServiceServer(server, &replAdminServer{logs: logs})
 	healthpb.RegisterHealthServer(server, healthServer)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	supervisorDone := make(chan error, 1)
-	go func() { supervisorDone <- supervise(supervisorCtx, node, logger) }()
+	go func() { supervisorDone <- supervise(supervisorCtx, node, logger, engineLogger) }()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	logger.Info("repl health serving", "address", listener.Addr().String())
 
-	var runErr error
 	supervisorFinished := false
 	serverFinished := false
 	select {
 	case <-ctx.Done():
 	case runErr = <-supervisorDone:
 		supervisorFinished = true
+	case runErr = <-logErrors:
 	case err := <-serveDone:
 		serverFinished = true
 		if ctx.Err() == nil {
@@ -85,12 +117,12 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	return runErr
 }
 
-func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
+func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.Logger) error {
 	engine := node.Engine
 	for ctx.Err() == nil {
 		cmd := exec.Command(engine.Command[0], engine.Command[1:]...)
-		stdout := &engineLogWriter{logger: logger, stream: "stdout"}
-		stderr := &engineLogWriter{logger: logger, stream: "stderr"}
+		stdout := &engineLogWriter{logger: engineLogger, stream: "stdout"}
+		stderr := &engineLogWriter{logger: engineLogger, stream: "stderr"}
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		cmd.WaitDelay = time.Second

@@ -18,7 +18,9 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/repl ./cmd/repl \
 
 FROM alpine:3.22 AS runtime-base
 
-RUN addgroup -S app && adduser -S -G app app
+RUN addgroup -S app && adduser -S -G app app \
+    && mkdir -p /var/log/distributed-kv \
+    && chown app:app /var/log/distributed-kv
 
 COPY --from=build /out/repl /usr/local/bin/repl
 COPY --from=build /out/kv-engine /usr/local/bin/kv-engine

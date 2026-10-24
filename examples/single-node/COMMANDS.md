@@ -31,6 +31,20 @@ docker compose -f examples/single-node/compose.yaml logs -f node-1
 docker compose -f examples/single-node/compose.yaml logs -f clusterstat
 ```
 
+## Repl log file
+
+```bash
+docker compose -f examples/single-node/compose.yaml \
+  exec node-1 tail -f /var/log/distributed-kv/node-1/repl.log
+```
+
+## Engine log file
+
+```bash
+docker compose -f examples/single-node/compose.yaml \
+  exec node-1 tail -f /var/log/distributed-kv/node-1/kv-engine.log
+```
+
 ## Dashboard
 
 ```text
