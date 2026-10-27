@@ -6,91 +6,59 @@
   <title>Component logs</title>
   <style>
     :root {
-      --bg: #0f1419;
-      --card: #1a2332;
-      --border: #2d3a4f;
-      --text: #e7ecf3;
-      --muted: #8b9bb4;
-      --up: #3dd68c;
-      --down: #f07178;
-      --unknown: #ffcc66;
-      --link: #7eb8ff;
+      --bg: #0f1419; --card: #1a2332; --border: #2d3a4f;
+      --text: #e7ecf3; --muted: #8b9bb4;
+      --up: #3dd68c; --down: #f07178; --unknown: #ffcc66; --link: #7eb8ff;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-      padding: 2rem;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 2rem;
     }
     a { color: var(--link); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    h1 { font-size: 1.3rem; margin-bottom: 0.35rem; }
+    h1 { font-size: 1.3rem; margin: 0.5rem 0 0.35rem; }
     .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.25rem; line-height: 1.5; }
     .badge {
-      display: inline-block;
-      padding: 0.15rem 0.55rem;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 600;
+      display: inline-block; padding: 0.15rem 0.55rem;
+      border-radius: 999px; font-size: 0.75rem; font-weight: 600;
     }
-    .badge.UP { background: rgba(61, 214, 140, 0.15); color: var(--up); }
-    .badge.DOWN { background: rgba(240, 113, 120, 0.15); color: var(--down); }
-    .badge.UNKNOWN { background: rgba(255, 204, 102, 0.15); color: var(--unknown); }
+    .badge.UP { background: rgba(61,214,140,.15); color: var(--up); }
+    .badge.DOWN { background: rgba(240,113,120,.15); color: var(--down); }
+    .badge.UNKNOWN { background: rgba(255,204,102,.15); color: var(--unknown); }
     table {
-      width: 100%;
-      border-collapse: collapse;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
+      width: 100%; border-collapse: collapse;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
     }
     th, td {
-      text-align: left;
-      padding: 0.7rem 1rem;
-      border-bottom: 1px solid var(--border);
-      font-size: 0.85rem;
+      text-align: left; padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border); font-size: 0.85rem;
       vertical-align: top;
     }
-    th {
-      background: rgba(0,0,0,0.25);
-      color: var(--muted);
-      font-size: 0.72rem;
-      text-transform: uppercase;
-    }
+    th { background: rgba(0,0,0,.25); color: var(--muted); font-size: 0.72rem; text-transform: uppercase; }
     tr:last-child td { border-bottom: none; }
-    .error { color: var(--down); word-break: break-word; }
     .empty { color: var(--muted); padding: 1.5rem; }
     .footer { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
   <p><a href="/">← back to cluster</a></p>
   <h1 id="title">Component logs</h1>
   <p class="meta" id="meta">Loading…</p>
-
   <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Change</th>
-        <th>Error</th>
-      </tr>
-    </thead>
+    <thead><tr><th>Log line</th></tr></thead>
     <tbody id="rows">
-      <tr><td class="empty" colspan="3">Loading…</td></tr>
+      <tr><td class="empty">Loading…</td></tr>
     </tbody>
   </table>
-
   <p class="footer">
-    Observation log from clusterstat (Health status changes). Snapshot only — no live refresh.
+    Process logs via ReplAdminService.ReadLogs (stdout/stderr). Snapshot only — no live refresh.
   </p>
-
   <script>
-    // URL: /components/{node_id}/{type}/logs
     const parts = location.pathname.split('/').filter(Boolean);
-    
     const nodeId = decodeURIComponent(parts[1] || '');
     const type = decodeURIComponent(parts[2] || '');
 
@@ -98,15 +66,13 @@
       const tbody = document.getElementById('rows');
       try {
         const res = await fetch(
-          '/api/v1/components/' +
-          encodeURIComponent(nodeId) + '/' +
+          '/api/v1/components/' + encodeURIComponent(nodeId) + '/' +
           encodeURIComponent(type) + '/logs'
         );
         if (res.status === 404) {
           document.getElementById('title').textContent = 'Not found';
-          document.getElementById('meta').textContent =
-            'Unknown component: ' + nodeId + ' / ' + type;
-          tbody.innerHTML = '<tr><td class="empty" colspan="3">No such component</td></tr>';
+          document.getElementById('meta').textContent = 'Unknown: ' + nodeId + ' / ' + type;
+          tbody.innerHTML = '<tr><td class="empty">No such component</td></tr>';
           return;
         }
         if (!res.ok) throw new Error(res.statusText);
@@ -115,43 +81,40 @@
         document.getElementById('title').textContent =
           (data.node_id || '-') + ' · ' + (data.type || '');
         document.getElementById('meta').innerHTML =
-          'address: ' + (data.address || '-') +
-          ' · status: <span class="badge ' + (data.status || 'UNKNOWN') + '">' +
-          (data.status || 'UNKNOWN') + '</span>' +
-          (data.error ? ' · last error: ' + esc(data.error) : '');
+          'address: ' + esc(data.address || '-') +
+          ' · status: <span class="badge ' + esc(data.status || 'UNKNOWN') + '">' +
+          esc(data.status || 'UNKNOWN') + '</span>' +
+          (data.repl_addr ? ' · via repl: ' + esc(data.repl_addr) : '');
 
-        const logs = data.logs || [];
         tbody.innerHTML = '';
-        if (logs.length === 0) {
-          tbody.innerHTML =
-            '<tr><td class="empty" colspan="3">No status changes recorded yet</td></tr>';
+        if (data.fetch_error) {
+          tbody.innerHTML = '<tr><td class="empty">fetch error: ' + esc(data.fetch_error) +
+            '<br><br>Need a running repl with log_dir in cluster.yaml</td></tr>';
           return;
         }
-        for (const e of logs) {
+        const lines = data.lines || [];
+        if (lines.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty">No log lines yet</td></tr>';
+          return;
+        }
+        for (const line of lines) {
           const tr = document.createElement('tr');
-          const t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '-';
-          tr.innerHTML =
-            '<td>' + esc(t) + '</td>' +
-            '<td>' +
-              '<span class="badge ' + esc(e.old_status || '') + '">' + esc(e.old_status || '') + '</span>' +
-              ' → ' +
-              '<span class="badge ' + esc(e.new_status || '') + '">' + esc(e.new_status || '') + '</span>' +
-            '</td>' +
-            '<td class="error">' + esc(e.error || '') + '</td>';
+          const td = document.createElement('td');
+          const pre = document.createElement('pre');
+          pre.textContent = line;
+          td.appendChild(pre);
+          tr.appendChild(td);
           tbody.appendChild(tr);
         }
       } catch (err) {
-        tbody.innerHTML =
-          '<tr><td class="empty" colspan="3">error: ' + esc(err.message) + '</td></tr>';
+        tbody.innerHTML = '<tr><td class="empty">error: ' + esc(err.message) + '</td></tr>';
       }
     }
-
     function esc(s) {
       const d = document.createElement('div');
       d.textContent = s == null ? '' : String(s);
       return d.innerHTML;
     }
-
     load();
   </script>
 </body>

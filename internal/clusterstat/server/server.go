@@ -9,18 +9,21 @@ import (
 
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/logclient"
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/web"
 )
 
 type Server struct {
 	httpServer *http.Server
 	collector  *collector.Collector
+	logs       *logclient.Client
 }
 
-func New(addr string, col *collector.Collector) *Server {
+func New(addr string, col *collector.Collector, components []config.Component, checkTimeout time.Duration) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
 		collector: col,
+		logs:      logclient.New(components, checkTimeout),
 		httpServer: &http.Server{
 			Addr:              addr,
 			Handler:           mux,
@@ -31,7 +34,6 @@ func New(addr string, col *collector.Collector) *Server {
 	mux.HandleFunc("GET /api/v1/components", s.handleComponents)
 	mux.HandleFunc("GET /api/v1/components/{node_id}/{type}/logs", s.handleComponentLogsAPI)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-
 	mux.HandleFunc("GET /{$}", s.serveIndex)
 	mux.HandleFunc("GET /components/{node_id}/{type}/logs", s.serveLogsPage)
 
@@ -81,25 +83,29 @@ func (s *Server) handleComponents(w http.ResponseWriter, r *http.Request) {
 	states := s.collector.Snapshot()
 
 	type item struct {
-		NodeID    string    `json:"node_id"`
-		Type      string    `json:"type"`
-		Address   string    `json:"address"`
-		Status    string    `json:"status"`
-		CheckedAt time.Time `json:"checked_at"`
-		Error     string    `json:"error"`
+		NodeID    string     `json:"node_id"`
+		Type      string     `json:"type"`
+		Address   string     `json:"address"`
+		Status    string     `json:"status"`
+		CheckedAt *time.Time `json:"checked_at"`
+		Error     string     `json:"error"`
 	}
 	resp := struct {
 		Components []item `json:"components"`
-	}{
-		Components: make([]item, 0, len(states)),
-	}
+	}{Components: make([]item, 0, len(states))}
+
 	for _, st := range states {
+		var checked *time.Time
+		if !st.CheckedAt.IsZero() {
+			t := st.CheckedAt
+			checked = &t
+		}
 		resp.Components = append(resp.Components, item{
 			NodeID:    st.NodeID,
 			Type:      string(st.Type),
 			Address:   st.Address,
 			Status:    string(st.Status),
-			CheckedAt: st.CheckedAt,
+			CheckedAt: checked,
 			Error:     st.Error,
 		})
 	}
@@ -115,51 +121,48 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 	nodeID := r.PathValue("node_id")
 	typ := config.ComponentType(r.PathValue("type"))
 
-	entries, st, ok := s.collector.Logs(nodeID, typ)
+	st, ok := s.collector.Lookup(nodeID, typ)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	type logItem struct {
-		Timestamp string `json:"timestamp"`
-		OldStatus string `json:"old_status"`
-		NewStatus string `json:"new_status"`
-		Error     string `json:"error"`
-		Message   string `json:"message"`
-	}
-	resp := struct {
-		NodeID    string    `json:"node_id"`
-		Type      string    `json:"type"`
-		Address   string    `json:"address"`
-		Status    string    `json:"status"`
-		CheckedAt time.Time `json:"checked_at"`
-		Error     string    `json:"error"`
-		Logs      []logItem `json:"logs"`
-	}{
-		NodeID:    st.NodeID,
-		Type:      string(st.Type),
-		Address:   st.Address,
-		Status:    string(st.Status),
-		CheckedAt: st.CheckedAt,
-		Error:     st.Error,
-		Logs:      make([]logItem, 0, len(entries)),
-	}
+	result, err := s.logs.ReadSnapshot(r.Context(), nodeID, typ, 256*1024)
 
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
-		resp.Logs = append(resp.Logs, logItem{
-			Timestamp: e.Timestamp.UTC().Format(time.RFC3339Nano),
-			OldStatus: string(e.OldStatus),
-			NewStatus: string(e.NewStatus),
-			Error:     e.Error,
-			Message:   e.Message,
-		})
+	type respBody struct {
+		NodeID     string   `json:"node_id"`
+		Type       string   `json:"type"`
+		Address    string   `json:"address"`
+		Status     string   `json:"status"`
+		Error      string   `json:"error"`
+		Source     string   `json:"source"`
+		ReplAddr   string   `json:"repl_addr,omitempty"`
+		NextOffset uint64   `json:"next_offset"`
+		EOF        bool     `json:"eof"`
+		Lines      []string `json:"lines"`
+		FetchError string   `json:"fetch_error,omitempty"`
+	}
+	out := respBody{
+		NodeID:  st.NodeID,
+		Type:    string(st.Type),
+		Address: st.Address,
+		Status:  string(st.Status),
+		Error:   st.Error,
+		Source:  "repl.v1.ReplAdminService.ReadLogs",
+		Lines:   []string{},
+	}
+	if err != nil {
+		out.FetchError = err.Error()
+	} else {
+		out.ReplAddr = result.ReplAddr
+		out.NextOffset = result.NextOffset
+		out.EOF = result.EOF
+		out.Lines = result.Lines
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(out); err != nil {
 		log.Printf("encode component logs: %v", err)
 	}
 }
