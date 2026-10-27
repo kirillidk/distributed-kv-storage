@@ -196,3 +196,33 @@ func TestIndependentChecks(t *testing.T) {
 	}
 	t.Fatal("fast component did not become UP independently of slow one")
 }
+
+func TestLogsRecordStatusChanges(t *testing.T) {
+	upAddr, stop := startFakeHealth(t, true)
+	defer stop()
+
+	comps := []config.Component{
+		{NodeID: "node-1", Type: config.TypeKVEngine, Address: upAddr},
+	}
+	col := collector.New(comps, 50*time.Millisecond, 300*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go col.Run(ctx)
+
+	waitFor(t, col, upAddr, collector.StatusUP)
+
+	logs, st, ok := col.Logs("node-1", config.TypeKVEngine)
+	if !ok {
+		t.Fatal("component not found")
+	}
+	if st.Status != collector.StatusUP {
+		t.Fatalf("status=%s", st.Status)
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected at least one log entry for UNKNOWN → UP")
+	}
+	last := logs[len(logs)-1]
+	if last.NewStatus != collector.StatusUP {
+		t.Fatalf("last.NewStatus=%s, want UP", last.NewStatus)
+	}
+}

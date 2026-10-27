@@ -175,12 +175,16 @@ func (s *server) SetReady(ctx context.Context, in *enginev1.SetReadyRequest) (*e
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
+	readyChanged := s.ready != in.Ready
 	s.ready = in.Ready
 	state := healthgrpc.HealthCheckResponse_NOT_SERVING
 	if s.ready {
 		state = healthgrpc.HealthCheckResponse_SERVING
 	}
 	s.health.SetServingStatus("", state)
+	if readyChanged {
+		log.Printf("state -> %s", state)
+	}
 	return &enginev1.SetReadyResponse{}, nil
 }
 
@@ -198,6 +202,7 @@ func (s *server) RunServer(port int) {
 	enginev1.RegisterEngineServiceServer(grpcServer, s)
 	healthcheck := s.health
 	healthgrpc.RegisterHealthServer(grpcServer, healthcheck)
+	log.Printf("gRPC server listening on %s", lis.Addr())
 
 	serverStopped := make(chan struct{}, 1)
 	go func() {

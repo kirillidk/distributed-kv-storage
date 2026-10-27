@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Component logs</title>
+  <style>
+    :root {
+      --bg: #0f1419; --card: #1a2332; --border: #2d3a4f;
+      --text: #e7ecf3; --muted: #8b9bb4;
+      --up: #3dd68c; --down: #f07178; --unknown: #ffcc66; --link: #7eb8ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 2rem;
+    }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-size: 1.3rem; margin: 0.5rem 0 0.35rem; }
+    .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.25rem; line-height: 1.5; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      border-radius: 999px; font-size: 0.75rem; font-weight: 600;
+    }
+    .badge.UP { background: rgba(61,214,140,.15); color: var(--up); }
+    .badge.DOWN { background: rgba(240,113,120,.15); color: var(--down); }
+    .badge.UNKNOWN { background: rgba(255,204,102,.15); color: var(--unknown); }
+    table {
+      width: 100%; border-collapse: collapse;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
+    }
+    th, td {
+      text-align: left; padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border); font-size: 0.85rem;
+      vertical-align: top;
+    }
+    th { background: rgba(0,0,0,.25); color: var(--muted); font-size: 0.72rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    .empty { color: var(--muted); padding: 1.5rem; }
+    .footer { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <p><a href="/">← back to cluster</a></p>
+  <h1 id="title">Component logs</h1>
+  <p class="meta" id="meta">Loading…</p>
+  <table>
+    <thead><tr><th>Log line</th></tr></thead>
+    <tbody id="rows">
+      <tr><td class="empty">Loading…</td></tr>
+    </tbody>
+  </table>
+  <p class="footer">
+    Process logs via ReplAdminService.ReadLogs (stdout/stderr). Snapshot only — no live refresh.
+  </p>
+  <script>
+    const parts = location.pathname.split('/').filter(Boolean);
+    const nodeId = decodeURIComponent(parts[1] || '');
+    const type = decodeURIComponent(parts[2] || '');
+
+    async function load() {
+      const tbody = document.getElementById('rows');
+      try {
+        const res = await fetch(
+          '/api/v1/components/' + encodeURIComponent(nodeId) + '/' +
+          encodeURIComponent(type) + '/logs'
+        );
+        if (res.status === 404) {
+          document.getElementById('title').textContent = 'Not found';
+          document.getElementById('meta').textContent = 'Unknown: ' + nodeId + ' / ' + type;
+          tbody.innerHTML = '<tr><td class="empty">No such component</td></tr>';
+          return;
+        }
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+
+        document.getElementById('title').textContent =
+          (data.node_id || '-') + ' · ' + (data.type || '');
+        document.getElementById('meta').innerHTML =
+          'address: ' + esc(data.address || '-') +
+          ' · status: <span class="badge ' + esc(data.status || 'UNKNOWN') + '">' +
+          esc(data.status || 'UNKNOWN') + '</span>' +
+          (data.repl_addr ? ' · via repl: ' + esc(data.repl_addr) : '');
+
+        tbody.innerHTML = '';
+        if (data.fetch_error) {
+          tbody.innerHTML = '<tr><td class="empty">fetch error: ' + esc(data.fetch_error) +
+            '<br><br>Need a running repl with log_dir in cluster.yaml</td></tr>';
+          return;
+        }
+        const lines = data.lines || [];
+        if (lines.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty">No log lines yet</td></tr>';
+          return;
+        }
+        for (const line of lines) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          const pre = document.createElement('pre');
+          pre.textContent = line;
+          td.appendChild(pre);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        }
+      } catch (err) {
+        tbody.innerHTML = '<tr><td class="empty">error: ' + esc(err.message) + '</td></tr>';
+      }
+    }
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
+    }
+    load();
+  </script>
+</body>
+</html>
