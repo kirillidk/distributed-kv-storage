@@ -13,41 +13,101 @@ import (
 	"syscall"
 	"time"
 
+	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
+	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run serves node health and supervises the local engine until ctx is canceled.
+// Run serves node health and logs, and supervises the local engine until ctx is canceled.
 func Run(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
-	listener, err := net.Listen("tcp", node.Repl.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
-	}
-	return runOnListener(ctx, node, logger, listener)
+	return runOnListener(ctx, node, logger, nil)
 }
 
-func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) error {
+func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) (runErr error) {
+	if listener != nil {
+		defer listener.Close()
+	}
+	var logs *componentLogs
+	var logErrors <-chan error
+	engineLogger := logger
+	if node.Repl.LogDir != "" {
+		var err error
+		logs, err = openComponentLogs(node.Repl.LogDir)
+		if err != nil {
+			return err
+		}
+		defer func() { runErr = errors.Join(runErr, logs.Close()) }()
+		logErrors = logs.errors
+		engineLogger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.engine, nil)})
+		logger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.repl, nil)})
+	}
+	logger.Info("repl starting", "node_id", node.ID, "listen_addr", node.Repl.ListenAddr,
+		"connect_addr", node.Repl.ConnectAddr, "engine_connect_addr", node.Engine.ConnectAddr)
+	defer func() {
+		if runErr != nil {
+			logger.Error("repl failed", "node_id", node.ID, "error", runErr)
+		} else {
+			logger.Info("repl stopped", "node_id", node.ID)
+		}
+	}()
+	if listener == nil {
+		var err error
+		listener, err = net.Listen("tcp", node.Repl.ListenAddr)
+		if err != nil {
+			return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
+		}
+		defer listener.Close()
+	}
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(replication.MaxMessageSize))
+	replv1.RegisterReplAdminServiceServer(server, &replAdminServer{logs: logs})
+	var proposals *proposalServer
+	if node.Repl.WALPath != "" {
+		wal, err := OpenWAL(node.Repl.WALPath)
+		if err != nil {
+			return err
+		}
+		defer wal.Close()
+		conn, err := grpc.NewClient(node.Engine.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return fmt.Errorf("create engine client: %w", err)
+		}
+		defer conn.Close()
+		healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		proposals = &proposalServer{
+			wal: wal, engine: enginev1.NewEngineServiceClient(conn),
+			setReady: func(ready bool) {
+				state := healthpb.HealthCheckResponse_NOT_SERVING
+				if ready {
+					state = healthpb.HealthCheckResponse_SERVING
+				}
+				healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)
+			},
+		}
+		replv1.RegisterReplServiceServer(server, proposals)
+	}
 	healthpb.RegisterHealthServer(server, healthServer)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	supervisorDone := make(chan error, 1)
-	go func() { supervisorDone <- supervise(supervisorCtx, node, logger) }()
+	go func() { supervisorDone <- supervise(supervisorCtx, node, logger, engineLogger, proposals) }()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	logger.Info("repl health serving", "address", listener.Addr().String())
 
-	var runErr error
 	supervisorFinished := false
 	serverFinished := false
 	select {
 	case <-ctx.Done():
 	case runErr = <-supervisorDone:
 		supervisorFinished = true
+	case runErr = <-logErrors:
 	case err := <-serveDone:
 		serverFinished = true
 		if ctx.Err() == nil {
@@ -85,12 +145,18 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	return runErr
 }
 
-func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
+func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.Logger, proposals *proposalServer) error {
 	engine := node.Engine
 	for ctx.Err() == nil {
+		if proposals != nil {
+			proposals.unavailable()
+		}
 		cmd := exec.Command(engine.Command[0], engine.Command[1:]...)
-		stdout := &engineLogWriter{logger: logger, stream: "stdout"}
-		stderr := &engineLogWriter{logger: logger, stream: "stderr"}
+		if proposals != nil {
+			cmd.Env = append(os.Environ(), "REPL_CONNECT_ADDR="+node.Repl.ConnectAddr)
+		}
+		stdout := &engineLogWriter{logger: engineLogger, stream: "stdout"}
+		stderr := &engineLogWriter{logger: engineLogger, stream: "stderr"}
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		cmd.WaitDelay = time.Second
@@ -108,11 +174,22 @@ func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error 
 				monitorHealth(healthCtx, engine.ConnectAddr, logger)
 				close(healthDone)
 			}()
+			recoveryDone := make(chan struct{})
+			go func() {
+				defer close(recoveryDone)
+				if proposals != nil {
+					proposals.recoverEngine(healthCtx, logger)
+				}
+			}()
 
 			select {
 			case err := <-waitCh:
 				stopHealth()
 				<-healthDone
+				<-recoveryDone
+				if proposals != nil {
+					proposals.unavailable()
+				}
 				stdout.close()
 				stderr.close()
 				logEngineExit(logger, cmd.Process.Pid, err)
@@ -120,6 +197,10 @@ func supervise(ctx context.Context, node NodeConfig, logger *slog.Logger) error 
 				stopHealth()
 				shutdownEngine(cmd, waitCh, engine.ShutdownTimeout.Duration, logger)
 				<-healthDone
+				<-recoveryDone
+				if proposals != nil {
+					proposals.unavailable()
+				}
 				stdout.close()
 				stderr.close()
 				return nil
