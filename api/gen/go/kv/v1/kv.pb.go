@@ -618,8 +618,8 @@ type IncrRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Must not be empty
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	// Amount to increment by. Must be positive.
-	Delta         uint64 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	// Signed amount to add. Zero leaves the numeric value unchanged.
+	Delta         int64 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -661,7 +661,7 @@ func (x *IncrRequest) GetKey() []byte {
 	return nil
 }
 
-func (x *IncrRequest) GetDelta() uint64 {
+func (x *IncrRequest) GetDelta() int64 {
 	if x != nil {
 		return x.Delta
 	}
@@ -670,7 +670,7 @@ func (x *IncrRequest) GetDelta() uint64 {
 
 type IncrResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Value         uint64                 `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
+	Value         int64                  `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -705,7 +705,7 @@ func (*IncrResponse) Descriptor() ([]byte, []int) {
 	return file_kv_v1_kv_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *IncrResponse) GetValue() uint64 {
+func (x *IncrResponse) GetValue() int64 {
 	if x != nil {
 		return x.Value
 	}
@@ -716,8 +716,8 @@ type DecrRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Must not be empty
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	// Amount to decrement by. Must be positive.
-	Delta         uint64 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	// Signed amount to subtract. Zero leaves the numeric value unchanged.
+	Delta         int64 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -759,7 +759,7 @@ func (x *DecrRequest) GetKey() []byte {
 	return nil
 }
 
-func (x *DecrRequest) GetDelta() uint64 {
+func (x *DecrRequest) GetDelta() int64 {
 	if x != nil {
 		return x.Delta
 	}
@@ -768,7 +768,7 @@ func (x *DecrRequest) GetDelta() uint64 {
 
 type DecrResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Value         uint64                 `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
+	Value         int64                  `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -803,7 +803,7 @@ func (*DecrResponse) Descriptor() ([]byte, []int) {
 	return file_kv_v1_kv_proto_rawDescGZIP(), []int{15}
 }
 
-func (x *DecrResponse) GetValue() uint64 {
+func (x *DecrResponse) GetValue() int64 {
 	if x != nil {
 		return x.Value
 	}
@@ -852,14 +852,14 @@ const file_kv_v1_kv_proto_rawDesc = "" +
 	"expires_at\x18\x01 \x01(\x04R\texpiresAt\"5\n" +
 	"\vIncrRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05delta\x18\x02 \x01(\x04R\x05delta\"$\n" +
+	"\x05delta\x18\x02 \x01(\x03R\x05delta\"$\n" +
 	"\fIncrResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\x04R\x05value\"5\n" +
+	"\x05value\x18\x01 \x01(\x03R\x05value\"5\n" +
 	"\vDecrRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
-	"\x05delta\x18\x02 \x01(\x04R\x05delta\"$\n" +
+	"\x05delta\x18\x02 \x01(\x03R\x05delta\"$\n" +
 	"\fDecrResponse\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\x04R\x05value2\xb4\x03\n" +
+	"\x05value\x18\x01 \x01(\x03R\x05value2\xb4\x03\n" +
 	"\tKVService\x12,\n" +
 	"\x03Set\x12\x11.kv.v1.SetRequest\x1a\x12.kv.v1.SetResponse\x12,\n" +
 	"\x03Get\x12\x11.kv.v1.GetRequest\x1a\x12.kv.v1.GetResponse\x12,\n" +

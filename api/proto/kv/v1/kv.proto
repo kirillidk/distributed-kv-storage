@@ -96,22 +96,22 @@ message IncrRequest {
   // Must not be empty
   bytes key = 1;
 
-  // Amount to increment by. Must be positive.
-  uint64 delta = 2;
+  // Signed amount to add. Zero leaves the numeric value unchanged.
+  int64 delta = 2;
 }
 
 message IncrResponse {
-  uint64 value = 1;
+  int64 value = 1;
 }
 
 message DecrRequest {
   // Must not be empty
   bytes key = 1;
 
-  // Amount to decrement by. Must be positive.
-  uint64 delta = 2;
+  // Signed amount to subtract. Zero leaves the numeric value unchanged.
+  int64 delta = 2;
 }
 
 message DecrResponse {
-  uint64 value = 1;
+  int64 value = 1;
 }

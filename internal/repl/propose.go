@@ -58,11 +58,12 @@ func (s *proposalServer) Propose(ctx context.Context, in *replv1.ProposeRequest)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	if err := s.apply(ctx, offset, in.Payload); err != nil {
+	result, err := s.apply(ctx, offset, in.Payload)
+	if err != nil {
 		s.readiness(false)
 		return nil, err
 	}
-	return &replv1.ProposeResponse{}, nil
+	return &replv1.ProposeResponse{Result: result}, nil
 }
 
 func (s *proposalServer) recover(ctx context.Context) error {
@@ -84,7 +85,8 @@ func (s *proposalServer) recover(ctx context.Context) error {
 		return err
 	}
 	if err := s.wal.Replay(state.Offset, func(offset uint64, payload []byte) error {
-		return s.apply(ctx, offset, payload)
+		_, err := s.apply(ctx, offset, payload)
+		return err
 	}); err != nil {
 		return err
 	}
@@ -95,11 +97,14 @@ func (s *proposalServer) recover(ctx context.Context) error {
 	return nil
 }
 
-func (s *proposalServer) apply(ctx context.Context, offset uint64, payload []byte) error {
+func (s *proposalServer) apply(ctx context.Context, offset uint64, payload []byte) ([]byte, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, engineRPCTimeout)
 	defer cancel()
-	_, err := s.engine.Apply(rpcCtx, &enginev1.ApplyRequest{Offset: offset, Payload: payload})
-	return err
+	resp, err := s.engine.Apply(rpcCtx, &enginev1.ApplyRequest{Offset: offset, Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetResult(), nil
 }
 
 func (s *proposalServer) engineReady(ctx context.Context, ready bool) error {

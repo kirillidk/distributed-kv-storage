@@ -131,12 +131,13 @@ func TestClientRequestsUnavailableUntilReplayCompletes(t *testing.T) {
 	}
 	_, getErr := client.Get(ctx, &kvv1.GetRequest{Key: []byte("persisted")})
 	_, setErr := client.Set(ctx, &kvv1.SetRequest{Key: []byte("new"), Value: []byte("value")})
+	_, expireErr := client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("persisted")})
 	close(blocked.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if status.Code(getErr) != codes.Unavailable || status.Code(setErr) != codes.Unavailable {
-		t.Fatalf("requests during replay: Get=%v Set=%v", getErr, setErr)
+	if status.Code(getErr) != codes.Unavailable || status.Code(setErr) != codes.Unavailable || status.Code(expireErr) != codes.Unavailable {
+		t.Fatalf("requests during replay: Get=%v Set=%v GetExpireTime=%v", getErr, setErr, expireErr)
 	}
 	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("persisted")})
 	if err != nil || string(got.GetValue()) != "value" {
@@ -223,6 +224,54 @@ func TestCanceledSetReadyCannotDisableRecoveredEngine(t *testing.T) {
 	}
 	if _, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("key"), Value: []byte("value")}); err != nil {
 		t.Fatalf("Set after late canceled request: %v", err)
+	}
+}
+
+func TestConcurrentIncrementsReturnCommittedResults(t *testing.T) {
+	s, client, _ := recoveryFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("counter"), Value: []byte("0")}); err != nil {
+		t.Fatal(err)
+	}
+	const count = 32
+	results := make(chan int64, count)
+	errorsCh := make(chan error, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := client.Incr(ctx, &kvv1.IncrRequest{Key: []byte("counter"), Delta: 1})
+			if err != nil {
+				errorsCh <- err
+				return
+			}
+			results <- r.Value
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errorsCh)
+	for err := range errorsCh {
+		t.Fatal(err)
+	}
+	seen := make(map[int64]bool)
+	for result := range results {
+		if result < 1 || result > count || seen[result] {
+			t.Fatalf("invalid committed result %d", result)
+		}
+		seen[result] = true
+	}
+	if len(seen) != count {
+		t.Fatal("lost an increment")
+	}
+	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("counter")})
+	if err != nil || string(got.GetValue()) != "32" {
+		t.Fatalf("counter: %v %v", got, err)
 	}
 }
 

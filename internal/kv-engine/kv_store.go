@@ -2,6 +2,7 @@ package kvengine
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"sync"
 )
@@ -20,11 +21,13 @@ const (
 type Storage interface {
 	Set(key string, value string, expiresAt uint64) error
 	Get(key string) (string, uint64, error)
-	Add(key string, value string, expiresAt uint64) (bool, error)
-	Replace(key string, value string, expiresAt uint64) (bool, error)
-	Delete(key string) (bool, error)
-	Incr(key string, delta uint64) (uint64, error)
-	Decr(key string, delta uint64) (uint64, error)
+	// Conditional mutations use the time recorded in the command, so replay
+	// does not change its outcome when a key has since expired.
+	Add(key string, value string, expiresAt, now uint64) (bool, error)
+	Replace(key string, value string, expiresAt, now uint64) (bool, error)
+	Delete(key string, now uint64) (bool, error)
+	Incr(key string, delta int64, now uint64) (int64, error)
+	Decr(key string, delta int64, now uint64) (int64, error)
 }
 
 type StorageEntry struct {
@@ -38,9 +41,9 @@ type MemoryStorage struct {
 	timeSource TimeSource
 }
 
-func (m *MemoryStorage) _Get(key string) *StorageEntry {
+func (m *MemoryStorage) getAt(key string, now uint64) *StorageEntry {
 	v, ok := m.values[key]
-	if !ok || (v.expiresAt != 0 && m.timeSource.Now() >= v.expiresAt) {
+	if !ok || (v.expiresAt != 0 && now >= v.expiresAt) {
 		return nil
 	}
 	return &v
@@ -67,21 +70,21 @@ func (m *MemoryStorage) Get(key string) (string, uint64, error) {
 
 	m.lock.RLock()
 	defer m.lock.RUnlock()
-	value := m._Get(key)
+	value := m.getAt(key, m.timeSource.Now())
 	if value == nil {
 		return "", 0, ErrKeyNotFound
 	}
 	return value.value, value.expiresAt, nil
 }
 
-func (m *MemoryStorage) Add(key string, value string, expiresAt uint64) (bool, error) {
+func (m *MemoryStorage) Add(key string, value string, expiresAt, now uint64) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
 	}
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	v := m._Get(key)
+	v := m.getAt(key, now)
 	if v != nil {
 		return false, nil
 	}
@@ -89,14 +92,14 @@ func (m *MemoryStorage) Add(key string, value string, expiresAt uint64) (bool, e
 	return true, nil
 }
 
-func (m *MemoryStorage) Replace(key string, value string, expiresAt uint64) (bool, error) {
+func (m *MemoryStorage) Replace(key string, value string, expiresAt, now uint64) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
 	}
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	v := m._Get(key)
+	v := m.getAt(key, now)
 	if v == nil {
 		return false, nil
 	}
@@ -104,14 +107,14 @@ func (m *MemoryStorage) Replace(key string, value string, expiresAt uint64) (boo
 	return true, nil
 }
 
-func (m *MemoryStorage) Delete(key string) (bool, error) {
+func (m *MemoryStorage) Delete(key string, now uint64) (bool, error) {
 	if key == "" {
 		return false, ErrEmptyKey
 	}
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	v := m._Get(key)
+	v := m.getAt(key, now)
 	if v == nil {
 		return false, nil
 	}
@@ -119,49 +122,49 @@ func (m *MemoryStorage) Delete(key string) (bool, error) {
 	return true, nil
 }
 
-func (m *MemoryStorage) Incr(key string, delta uint64) (uint64, error) {
+func (m *MemoryStorage) Incr(key string, delta int64, now uint64) (int64, error) {
 	if key == "" {
 		return 0, ErrEmptyKey
 	}
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	v := m._Get(key)
+	v := m.getAt(key, now)
 	if v == nil {
 		return 0, ErrKeyNotFound
 	}
-	intValue, err := strconv.ParseUint(v.value, 10, 64)
+	intValue, err := strconv.ParseInt(v.value, 10, 64)
 	if err != nil {
 		return 0, ErrNotANumber
 	}
-	newValue := intValue + delta
-	if newValue < intValue {
+	if (delta > 0 && intValue > math.MaxInt64-delta) || (delta < 0 && intValue < math.MinInt64-delta) {
 		return 0, ErrOverflow
 	}
-	m._Set(key, strconv.FormatUint(newValue, 10), v.expiresAt)
+	newValue := intValue + delta
+	m._Set(key, strconv.FormatInt(newValue, 10), v.expiresAt)
 	return newValue, nil
 }
 
-func (m *MemoryStorage) Decr(key string, delta uint64) (uint64, error) {
+func (m *MemoryStorage) Decr(key string, delta int64, now uint64) (int64, error) {
 	if key == "" {
 		return 0, ErrEmptyKey
 	}
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	v := m._Get(key)
+	v := m.getAt(key, now)
 	if v == nil {
 		return 0, ErrKeyNotFound
 	}
-	intValue, err := strconv.ParseUint(v.value, 10, 64)
+	intValue, err := strconv.ParseInt(v.value, 10, 64)
 	if err != nil {
 		return 0, ErrNotANumber
 	}
-	newValue := intValue - delta
-	if newValue > intValue {
+	if (delta > 0 && intValue < math.MinInt64+delta) || (delta < 0 && intValue > math.MaxInt64+delta) {
 		return 0, ErrOverflow
 	}
-	m._Set(key, strconv.FormatUint(newValue, 10), v.expiresAt)
+	newValue := intValue - delta
+	m._Set(key, strconv.FormatInt(newValue, 10), v.expiresAt)
 	return newValue, nil
 }
 

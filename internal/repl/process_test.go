@@ -18,8 +18,10 @@ import (
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 )
 
 func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
@@ -147,6 +149,84 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		}
 		set(keys[i], values[i], ttl)
 	}
+	client := kvv1.NewKVServiceClient(engineConn)
+	mutation := func(key, value string, call func(context.Context) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := call(ctx); err != nil {
+			t.Fatal(err)
+		}
+		expected += uint64(36 + len(key) + len(value))
+	}
+	mutation("added", "created", func(ctx context.Context) error {
+		r, err := client.Add(ctx, &kvv1.AddRequest{Key: []byte("added"), Value: []byte("created")})
+		if err == nil && !r.Success {
+			return fmt.Errorf("Add returned false")
+		}
+		return err
+	})
+	mutation("added", "ignored", func(ctx context.Context) error {
+		r, err := client.Add(ctx, &kvv1.AddRequest{Key: []byte("added"), Value: []byte("ignored")})
+		if err == nil && r.Success {
+			return fmt.Errorf("Add overwrote an existing key")
+		}
+		return err
+	})
+	set([]byte("replaced"), []byte("old"), 0)
+	mutation("replaced", "new", func(ctx context.Context) error {
+		r, err := client.Replace(ctx, &kvv1.ReplaceRequest{Key: []byte("replaced"), Value: []byte("new")})
+		if err == nil && !r.Success {
+			return fmt.Errorf("Replace returned false")
+		}
+		return err
+	})
+	mutation("missing", "ignored", func(ctx context.Context) error {
+		r, err := client.Replace(ctx, &kvv1.ReplaceRequest{Key: []byte("missing"), Value: []byte("ignored")})
+		if err == nil && r.Success {
+			return fmt.Errorf("Replace created a missing key")
+		}
+		return err
+	})
+	set([]byte("deleted"), []byte("old"), 0)
+	for _, want := range []bool{true, false} {
+		mutation("deleted", "", func(ctx context.Context) error {
+			r, err := client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte("deleted")})
+			if err == nil && r.Success != want {
+				return fmt.Errorf("Delete: got %v, want %v", r.Success, want)
+			}
+			return err
+		})
+	}
+	set([]byte("counter"), []byte("-5"), 0)
+	mutation("counter", "", func(ctx context.Context) error {
+		r, err := client.Incr(ctx, &kvv1.IncrRequest{Key: []byte("counter"), Delta: 3})
+		if err == nil && r.Value != -2 {
+			return fmt.Errorf("Incr: got %d", r.Value)
+		}
+		return err
+	})
+	mutation("counter", "", func(ctx context.Context) error {
+		r, err := client.Decr(ctx, &kvv1.DecrRequest{Key: []byte("counter"), Delta: -4})
+		if err == nil && r.Value != 2 {
+			return fmt.Errorf("Decr: got %d", r.Value)
+		}
+		return err
+	})
+	mutation("added", "", func(ctx context.Context) error {
+		_, err := client.Incr(ctx, &kvv1.IncrRequest{Key: []byte("added"), Delta: 1})
+		if status.Code(err) != codes.FailedPrecondition {
+			return fmt.Errorf("non-numeric Incr: %v", err)
+		}
+		return nil
+	})
+	mutation("missing", "", func(ctx context.Context) error {
+		_, err := client.Decr(ctx, &kvv1.DecrRequest{Key: []byte("missing"), Delta: 1})
+		if status.Code(err) != codes.NotFound {
+			return fmt.Errorf("missing Decr: %v", err)
+		}
+		return nil
+	})
 	var expiry uint64
 	verify := func(stage string) {
 		for i, key := range keys {
@@ -165,6 +245,28 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 				}
 			} else if got.ExpiresAt != 0 {
 				t.Fatalf("%s changed permanent expiry", stage)
+			}
+			ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+			expiration, err := kvv1.NewKVServiceClient(engineConn).GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: key})
+			cancel()
+			if err != nil || expiration.GetExpiresAt() != got.ExpiresAt {
+				t.Fatalf("%s GetExpireTime: %v %v", stage, expiration, err)
+			}
+		}
+		for key, want := range map[string]string{"added": "created", "replaced": "new", "counter": "2"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			got, err := kvv1.NewKVServiceClient(engineConn).Get(ctx, &kvv1.GetRequest{Key: []byte(key)})
+			cancel()
+			if err != nil || string(got.GetValue()) != want {
+				t.Fatalf("%s %s: %v %v", stage, key, got, err)
+			}
+		}
+		for _, key := range []string{"deleted", "missing"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, err := kvv1.NewKVServiceClient(engineConn).Get(ctx, &kvv1.GetRequest{Key: []byte(key)})
+			cancel()
+			if status.Code(err) != codes.NotFound {
+				t.Fatalf("%s resurrected %s: %v", stage, key, err)
 			}
 		}
 	}

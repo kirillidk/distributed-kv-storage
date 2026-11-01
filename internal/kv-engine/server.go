@@ -3,7 +3,6 @@ package kvengine
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -31,13 +30,12 @@ type server struct {
 	storage       Storage
 	timeSource    TimeSource
 	appliedOffset uint64
+	appliedResult []byte
 	lock          sync.RWMutex
 	proposer      replv1.ReplServiceClient
 	ready         bool
 	health        *health.Server
 }
-
-const setEventMagic uint32 = 0x6f825fba
 
 func convertError(e error) error {
 	switch {
@@ -55,30 +53,8 @@ func convertError(e error) error {
 }
 
 func (s *server) Set(ctx context.Context, in *kvv1.SetRequest) (*kvv1.SetResponse, error) {
-	if !s.isReady() {
-		return nil, status.Error(codes.Unavailable, "engine recovery is in progress")
-	}
-	if len(in.Key) == 0 {
-		return nil, convertError(ErrEmptyKey)
-	}
-	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if s.proposer != nil {
-		payload, err := encodeSetEvent(in.Key, in.Value, expiresAt)
-		if err != nil {
-			return nil, status.Error(codes.ResourceExhausted, err.Error())
-		}
-		// Do not hold the Apply lock while calling repl: Propose calls back into Apply.
-		if _, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{Payload: payload}); err != nil {
-			return nil, err
-		}
-		return &kvv1.SetResponse{}, nil
-	}
-	err = s.storage.Set(string(in.Key), string(in.Value), expiresAt)
-	if err != nil {
-		return nil, convertError(err)
+	if _, err := s.mutateValue(ctx, setEventMagic, in.Key, in.Value, in.Ttl); err != nil {
+		return nil, err
 	}
 	return &kvv1.SetResponse{}, nil
 }
@@ -95,6 +71,9 @@ func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse,
 }
 
 func (s *server) GetExpireTime(_ context.Context, in *kvv1.GetExpireTimeRequest) (*kvv1.GetExpireTimeResponse, error) {
+	if !s.isReady() {
+		return nil, status.Error(codes.Unavailable, "engine recovery is in progress")
+	}
 	_, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		return nil, convertError(err)
@@ -102,118 +81,157 @@ func (s *server) GetExpireTime(_ context.Context, in *kvv1.GetExpireTimeRequest)
 	return &kvv1.GetExpireTimeResponse{ExpiresAt: expiresAt}, nil
 }
 
-func (s *server) Add(_ context.Context, in *kvv1.AddRequest) (*kvv1.AddResponse, error) {
-	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
+func (s *server) Add(ctx context.Context, in *kvv1.AddRequest) (*kvv1.AddResponse, error) {
+	r, err := s.mutateValue(ctx, addEventMagic, in.Key, in.Value, in.Ttl)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, err
 	}
-	success, err := s.storage.Add(string(in.Key), string(in.Value), expiresAt)
-	if err != nil {
-		return nil, convertError(err)
-	}
-	return &kvv1.AddResponse{Success: success}, nil
+	return &kvv1.AddResponse{Success: r.success}, nil
 }
 
-func (s *server) Replace(_ context.Context, in *kvv1.ReplaceRequest) (*kvv1.ReplaceResponse, error) {
-	expiresAt, err := expiresAtFromTTL(in.Ttl, s.timeSource.Now())
+func (s *server) Replace(ctx context.Context, in *kvv1.ReplaceRequest) (*kvv1.ReplaceResponse, error) {
+	r, err := s.mutateValue(ctx, replaceEventMagic, in.Key, in.Value, in.Ttl)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, err
 	}
-	success, err := s.storage.Replace(string(in.Key), string(in.Value), expiresAt)
-	if err != nil {
-		return nil, convertError(err)
-	}
-	return &kvv1.ReplaceResponse{Success: success}, nil
+	return &kvv1.ReplaceResponse{Success: r.success}, nil
 }
 
-func (s *server) Delete(_ context.Context, in *kvv1.DeleteRequest) (*kvv1.DeleteResponse, error) {
-	success, err := s.storage.Delete(string(in.Key))
+func (s *server) Delete(ctx context.Context, in *kvv1.DeleteRequest) (*kvv1.DeleteResponse, error) {
+	r, err := s.mutate(ctx, mutation{kind: deleteEventMagic, key: in.Key, now: s.timeSource.Now()})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, err
 	}
-	return &kvv1.DeleteResponse{Success: success}, nil
+	return &kvv1.DeleteResponse{Success: r.success}, nil
 }
 
-func (s *server) Incr(_ context.Context, in *kvv1.IncrRequest) (*kvv1.IncrResponse, error) {
-	newValue, err := s.storage.Incr(string(in.Key), in.Delta)
+func (s *server) Incr(ctx context.Context, in *kvv1.IncrRequest) (*kvv1.IncrResponse, error) {
+	r, err := s.mutate(ctx, mutation{kind: incrEventMagic, key: in.Key, delta: in.Delta, now: s.timeSource.Now()})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, err
 	}
-	return &kvv1.IncrResponse{Value: newValue}, nil
+	return &kvv1.IncrResponse{Value: r.value}, nil
 }
 
-func (s *server) Decr(_ context.Context, in *kvv1.DecrRequest) (*kvv1.DecrResponse, error) {
-	newValue, err := s.storage.Decr(string(in.Key), in.Delta)
+func (s *server) Decr(ctx context.Context, in *kvv1.DecrRequest) (*kvv1.DecrResponse, error) {
+	r, err := s.mutate(ctx, mutation{kind: decrEventMagic, key: in.Key, delta: in.Delta, now: s.timeSource.Now()})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, err
 	}
-	return &kvv1.DecrResponse{Value: newValue}, nil
+	return &kvv1.DecrResponse{Value: r.value}, nil
 }
 
-func (s *server) Apply(_ context.Context, in *enginev1.ApplyRequest) (*enginev1.ApplyResponse, error) {
+func (s *server) mutateValue(ctx context.Context, kind uint32, key, value []byte, ttl uint64) (mutationResult, error) {
+	if !s.isReady() {
+		return mutationResult{}, status.Error(codes.Unavailable, "engine recovery is in progress")
+	}
+	now := s.timeSource.Now()
+	expiresAt, err := expiresAtFromTTL(ttl, now)
+	if err != nil {
+		return mutationResult{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return s.mutate(ctx, mutation{kind: kind, key: key, value: value, now: now, expiresAt: expiresAt})
+}
+
+func (s *server) mutate(ctx context.Context, cmd mutation) (mutationResult, error) {
+	if !s.isReady() {
+		return mutationResult{}, status.Error(codes.Unavailable, "engine recovery is in progress")
+	}
+	if len(cmd.key) == 0 {
+		return mutationResult{}, convertError(ErrEmptyKey)
+	}
+	if err := ctx.Err(); err != nil {
+		return mutationResult{}, status.FromContextError(err).Err()
+	}
+	payload, err := encodeMutation(cmd)
+	if err != nil {
+		return mutationResult{}, status.Error(codes.ResourceExhausted, err.Error())
+	}
+	var result mutationResult
+	if s.proposer != nil {
+		// Apply calls back into this server: never hold its lock during Propose.
+		resp, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{Payload: payload})
+		if err != nil {
+			return result, err
+		}
+		// Set has no business result; accept responses from older repl versions.
+		if cmd.kind == setEventMagic {
+			return mutationResult{success: true}, nil
+		}
+		result, err = decodeMutationResult(resp.GetResult())
+		if err != nil {
+			return result, status.Error(codes.Internal, err.Error())
+		}
+	} else {
+		s.lock.Lock()
+		defer s.lock.Unlock()
+		if !s.ready {
+			return result, status.Error(codes.Unavailable, "engine recovery is in progress")
+		}
+		if err := ctx.Err(); err != nil {
+			return result, status.FromContextError(err).Err()
+		}
+		result = s.applyMutation(cmd)
+	}
+	if result.err != nil {
+		return result, convertError(result.err)
+	}
+	return result, nil
+}
+
+// Called with the Apply lock held. Storage methods perform each conditional
+// check and mutation atomically using the timestamp recorded in the event.
+func (s *server) applyMutation(cmd mutation) mutationResult {
+	var r mutationResult
+	key, value := string(cmd.key), string(cmd.value)
+	switch cmd.kind {
+	case setEventMagic:
+		r.err = s.storage.Set(key, value, cmd.expiresAt)
+		r.success = r.err == nil
+	case addEventMagic:
+		r.success, r.err = s.storage.Add(key, value, cmd.expiresAt, cmd.now)
+	case replaceEventMagic:
+		r.success, r.err = s.storage.Replace(key, value, cmd.expiresAt, cmd.now)
+	case deleteEventMagic:
+		r.success, r.err = s.storage.Delete(key, cmd.now)
+	case incrEventMagic:
+		r.value, r.err = s.storage.Incr(key, cmd.delta, cmd.now)
+		r.success = r.err == nil
+	case decrEventMagic:
+		r.value, r.err = s.storage.Decr(key, cmd.delta, cmd.now)
+		r.success = r.err == nil
+	}
+	return r
+}
+
+func (s *server) Apply(ctx context.Context, in *enginev1.ApplyRequest) (*enginev1.ApplyResponse, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-
+	if err := ctx.Err(); err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
 	if in.Offset <= s.appliedOffset {
+		if in.Offset == s.appliedOffset {
+			return &enginev1.ApplyResponse{Result: bytes.Clone(s.appliedResult)}, nil
+		}
 		return &enginev1.ApplyResponse{}, nil
 	}
 	if in.Offset-s.appliedOffset != uint64(len(in.Payload)) {
-		return nil, status.Errorf(
-			codes.FailedPrecondition,
-			"invalid offset: applied=%d payload_size=%d got=%d",
-			s.appliedOffset,
-			len(in.Payload),
-			in.Offset,
-		)
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"invalid offset: applied=%d payload_size=%d got=%d", s.appliedOffset, len(in.Payload), in.Offset)
 	}
-	payload := in.Payload
-	r := bytes.NewReader(payload)
-
-	order := binary.BigEndian
-
-	var cmd uint32
-	if err := binary.Read(r, order, &cmd); err != nil {
+	cmd, err := decodeMutation(in.Payload)
+	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-
-	switch cmd {
-	case setEventMagic:
-		var expiresAt uint64
-		if err := binary.Read(r, order, &expiresAt); err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		var keySize, valueSize uint32
-		if err := binary.Read(r, order, &keySize); err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-		if err := binary.Read(r, order, &valueSize); err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		}
-
-		remaining := uint64(r.Len())
-		if uint64(keySize) > remaining || uint64(valueSize) != remaining-uint64(keySize) {
-			return nil, status.Error(codes.InvalidArgument, "malformed payload")
-		}
-		key := make([]byte, keySize)
-		if n, _ := r.Read(key); uint32(n) != keySize {
-			return nil, status.Error(codes.InvalidArgument, "malformed payload")
-		}
-
-		value := make([]byte, valueSize)
-		if n, _ := r.Read(value); uint32(n) != valueSize {
-			return nil, status.Error(codes.InvalidArgument, "malformed payload")
-		}
-
-		err := s.storage.Set(string(key), string(value), expiresAt)
-		if err != nil {
-			return nil, convertError(err)
-		}
-
-		s.appliedOffset = in.Offset
-		return &enginev1.ApplyResponse{}, nil
-	default:
-		return nil, status.Error(codes.InvalidArgument, "invalid command type")
+	result, err := encodeMutationResult(s.applyMutation(cmd))
+	if err != nil {
+		return nil, convertError(err)
 	}
+	// A committed command can be a no-op (including a business rejection).
+	// Its offset must still advance so subsequent entries and replay can proceed.
+	s.appliedOffset, s.appliedResult = in.Offset, result
+	return &enginev1.ApplyResponse{Result: bytes.Clone(result)}, nil
 }
 
 func (s *server) GetOffset(_ context.Context, _ *enginev1.GetOffsetRequest) (*enginev1.GetOffsetResponse, error) {
@@ -318,18 +336,4 @@ func CreateServerWithProposer(storage Storage, proposer replv1.ReplServiceClient
 		s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
 	}
 	return s
-}
-
-func encodeSetEvent(key, value []byte, expiresAt uint64) ([]byte, error) {
-	if uint64(len(key))+uint64(len(value))+20 > replication.MaxPayloadSize {
-		return nil, errors.New("Set payload is too large")
-	}
-	payload := make([]byte, 20+len(key)+len(value))
-	binary.BigEndian.PutUint32(payload, setEventMagic)
-	binary.BigEndian.PutUint64(payload[4:], expiresAt)
-	binary.BigEndian.PutUint32(payload[12:], uint32(len(key)))
-	binary.BigEndian.PutUint32(payload[16:], uint32(len(value)))
-	copy(payload[20:], key)
-	copy(payload[20+len(key):], value)
-	return payload, nil
 }

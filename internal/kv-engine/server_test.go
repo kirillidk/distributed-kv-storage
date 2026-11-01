@@ -702,7 +702,7 @@ func TestIncr(t *testing.T) {
 	resp, err := client.Incr(ctx, &kvv1.IncrRequest{Key: []byte("counter"), Delta: 5})
 	assert.NoError(t, err)
 	if err == nil {
-		assert.Equal(t, uint64(15), resp.GetValue())
+		assert.Equal(t, int64(15), resp.GetValue())
 	}
 
 	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("counter")})
@@ -733,7 +733,7 @@ func TestIncrErrors(t *testing.T) {
 
 	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("text"), Value: []byte("not-a-number")})
 	assert.NoError(t, err)
-	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("max"), Value: []byte("18446744073709551615")})
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("max"), Value: []byte("9223372036854775807")})
 	assert.NoError(t, err)
 
 	for _, tt := range tests {
@@ -748,7 +748,7 @@ func TestIncrErrors(t *testing.T) {
 	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("max")})
 	assert.NoError(t, err)
 	if err == nil {
-		assert.Equal(t, []byte("18446744073709551615"), got.GetValue())
+		assert.Equal(t, []byte("9223372036854775807"), got.GetValue())
 	}
 }
 
@@ -767,7 +767,7 @@ func TestDecr(t *testing.T) {
 	resp, err := client.Decr(ctx, &kvv1.DecrRequest{Key: []byte("counter"), Delta: 4})
 	assert.NoError(t, err)
 	if err == nil {
-		assert.Equal(t, uint64(6), resp.GetValue())
+		assert.Equal(t, int64(6), resp.GetValue())
 	}
 
 	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("counter")})
@@ -788,18 +788,18 @@ func TestDecrErrors(t *testing.T) {
 	tests := []struct {
 		name  string
 		key   []byte
-		delta uint64
+		delta int64
 		want  codes.Code
 	}{
 		{name: "empty key", key: []byte(""), delta: 1, want: codes.InvalidArgument},
 		{name: "missing key", key: []byte("missing"), delta: 1, want: codes.NotFound},
 		{name: "not a number", key: []byte("text"), delta: 1, want: codes.FailedPrecondition},
-		{name: "underflow", key: []byte("small"), delta: 2, want: codes.InvalidArgument},
+		{name: "underflow", key: []byte("small"), delta: 1, want: codes.InvalidArgument},
 	}
 
 	_, err := client.Set(ctx, &kvv1.SetRequest{Key: []byte("text"), Value: []byte("not-a-number")})
 	assert.NoError(t, err)
-	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("small"), Value: []byte("1")})
+	_, err = client.Set(ctx, &kvv1.SetRequest{Key: []byte("small"), Value: []byte("-9223372036854775808")})
 	assert.NoError(t, err)
 
 	for _, tt := range tests {
@@ -814,7 +814,7 @@ func TestDecrErrors(t *testing.T) {
 	got, err := client.Get(ctx, &kvv1.GetRequest{Key: []byte("small")})
 	assert.NoError(t, err)
 	if err == nil {
-		assert.Equal(t, []byte("1"), got.GetValue())
+		assert.Equal(t, []byte("-9223372036854775808"), got.GetValue())
 	}
 }
 
