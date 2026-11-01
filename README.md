@@ -11,8 +11,14 @@ Distributed key-value storage written in Go. The project consists of separate
 
 ## KV API v1
 
-[`kv.proto`](api/proto/kv/v1/kv.proto) defines `Set(key, value, ttl)` and
-`Get(key)`. Keys and values are byte sequences; keys must not be empty.
+[`kv.proto`](api/proto/kv/v1/kv.proto) defines `Set`, `Get`, `Add`, `Replace`,
+`Delete`, `Incr`, `Decr`, and `GetExpireTime`.
+Keys and values are byte sequences; keys must not be empty.
+
+`Add` creates an absent key, `Replace` updates an existing key, and `Delete`
+removes an existing key. Each returns whether it changed the key. Expired keys
+count as absent. `Incr` and `Decr` operate on decimal `int64` values with signed
+`int64` deltas, preserve expiration, and reject overflow without changing the value.
 
 TTL is expressed in seconds:
 
@@ -23,6 +29,12 @@ TTL is expressed in seconds:
 Expired keys are returned as `NotFound`. Other expected gRPC codes are
 `InvalidArgument`, `FailedPrecondition`, `Unavailable`, and `Internal`.
 Health checks use the standard `grpc.health.v1.Health` service.
+
+`Get` and `GetExpireTime` return an absolute expiration timestamp in seconds,
+or `0` for no expiration. During recovery, client methods return `Unavailable`.
+With a local `repl`, every mutation goes through commit and `Apply` before its
+result is returned. Conditional checks use the timestamp recorded in the command,
+so replay has the same result even after a key's expiration time has passed.
 
 Go import path:
 
