@@ -67,7 +67,9 @@ func (x *ProposeRequest) GetPayload() []byte {
 }
 
 type ProposeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque result returned by the local engine after commit and Apply.
+	Result        []byte `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,14 +104,22 @@ func (*ProposeResponse) Descriptor() ([]byte, []int) {
 	return file_repl_v1_repl_proto_rawDescGZIP(), []int{1}
 }
 
+func (x *ProposeResponse) GetResult() []byte {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 var File_repl_v1_repl_proto protoreflect.FileDescriptor
 
 const file_repl_v1_repl_proto_rawDesc = "" +
 	"\n" +
 	"\x12repl/v1/repl.proto\x12\arepl.v1\"*\n" +
 	"\x0eProposeRequest\x12\x18\n" +
-	"\apayload\x18\x01 \x01(\fR\apayload\"\x11\n" +
-	"\x0fProposeResponse2K\n" +
+	"\apayload\x18\x01 \x01(\fR\apayload\")\n" +
+	"\x0fProposeResponse\x12\x16\n" +
+	"\x06result\x18\x01 \x01(\fR\x06result2K\n" +
 	"\vReplService\x12<\n" +
 	"\aPropose\x12\x17.repl.v1.ProposeRequest\x1a\x18.repl.v1.ProposeResponseBGZEgithub.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1;replv1b\x06proto3"
 

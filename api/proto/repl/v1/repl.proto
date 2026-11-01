@@ -13,4 +13,7 @@ message ProposeRequest {
   bytes payload = 1;
 }
 
-message ProposeResponse {}
+message ProposeResponse {
+  // Opaque result returned by the local engine after commit and Apply.
+  bytes result = 1;
+}
