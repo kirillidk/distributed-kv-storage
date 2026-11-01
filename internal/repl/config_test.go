@@ -79,6 +79,26 @@ func TestLoadManifestLogDirectory(t *testing.T) {
 	}
 }
 
+func TestManifestRequiresWALOnEveryRaftMember(t *testing.T) {
+	manifest, err := LoadManifest(writeManifest(t, validManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := manifest.Nodes[0]
+	second.ID = "node_1"
+	second.Repl.ConnectAddr = "node-1:7001"
+	second.Engine.ConnectAddr = "node-1:8001"
+	manifest.Nodes = append(manifest.Nodes, second)
+	manifest.Nodes[0].Repl.WALPath = "node-0.wal"
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "wal_path on every node") {
+		t.Fatalf("partial Raft membership: %v", err)
+	}
+	manifest.Nodes[1].Repl.WALPath = "node-1.wal"
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadManifestErrors(t *testing.T) {
 	tests := []struct {
 		name    string

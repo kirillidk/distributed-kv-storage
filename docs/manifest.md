@@ -53,8 +53,9 @@ Omit the field for console-only logging. Files are available through
 
 Optional path to the local binary write-ahead log. When set, `repl` exposes
 `repl.v1.ReplService.Propose` on its listen address. Clients send Set/Get to
-kv-engine; it encodes writing events and proposes their bytes to repl. Repl
-persists each payload with fsync before calling back into `EngineService.Apply`.
+kv-engine; it encodes writing events and proposes their bytes to repl. In a
+single-node cluster, the elected leader persists each payload with fsync before
+calling back into `EngineService.Apply`.
 Repl does not expose KV methods or decode engine events.
 
 The supervisor sets `REPL_CONNECT_ADDR` to `repl.connect_addr` in the engine
@@ -80,6 +81,34 @@ the `repl` working directory. Each file must be owned by one `repl` process.
 Keep the file on persistent storage to recover across process restarts.
 On opening the WAL, repl syncs the file and its parent directory before
 accepting writes, so creating the log also persists its directory entry.
+
+### Raft elections
+
+When `wal_path` is configured, every node in the shared manifest is a voter and
+must have its own WAL. The supervisor connects to all other `repl.connect_addr`
+addresses and serves [`RaftService`](../api/proto/repl/v1/raft.proto) alongside
+health and logs, independently of engine recovery. Membership is static.
+
+Each election needs a strict majority of all configured nodes, including those
+currently offline. RequestVote compares the last record's term first, then its
+Raft index (record count, separate from the engine's byte offset). The election
+timeout is sampled independently from `[500ms, 1s)` on every reset. Leaders send
+empty AppendEntries immediately after election and then every 100ms; peer RPCs
+have a 200ms deadline. A higher term in a request or response demotes the node.
+
+Term and votedFor are stored in `<wal_path>.raft-state` with a checksum, atomic
+replacement, file fsync and directory fsync before votes are acknowledged or
+election requests are sent. Keep this file with the WAL across restarts. Corrupt
+state or persistence failures stop the node. WAL records now include their term;
+legacy records are still readable with term zero and retain their engine offsets.
+
+This stage implements elections and heartbeats. Nonempty AppendEntries and
+multi-node proposals return `Unimplemented` until log replication is implemented.
+A follower or candidate returns `Unavailable` for proposals. Single-node writes
+become available after both election and engine recovery; the named
+`repl.v1.ReplService` health status reflects this. In multi-node clusters that
+health status stays NOT_SERVING, while `repl.v1.RaftService` reports SERVING.
+Role, term and leader ID changes appear in the repl diagnostic log.
 
 ### `nodes[].engine.connect_addr`
 

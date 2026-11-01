@@ -82,6 +82,12 @@ nodes:
 
 See [the manifest documentation](docs/manifest.md) for the field descriptions.
 
+With `wal_path` on every node, repl elects a Raft leader using majority voting,
+WAL freshness checks, randomized election timeouts and empty AppendEntries
+heartbeats. Term and votedFor survive restarts in `<wal_path>.raft-state`.
+Single-node writes are supported; multi-node log replication is not implemented
+yet, so multi-node proposals return `Unimplemented` on the leader.
+
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are

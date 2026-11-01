@@ -92,6 +92,7 @@ func (m *Manifest) Validate() error {
 	seenIDs := make(map[string]int, len(m.Nodes))
 	seenReplAddrs := make(map[string]int, len(m.Nodes))
 	seenEngineAddrs := make(map[string]int, len(m.Nodes))
+	walNodes := 0
 	for i, node := range m.Nodes {
 		label := fmt.Sprintf("nodes[%d]", i)
 		if strings.TrimSpace(node.ID) == "" {
@@ -101,6 +102,9 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("duplicate node ID %q at nodes[%d] and %s", node.ID, previous, label)
 		}
 		seenIDs[node.ID] = i
+		if node.Repl.WALPath != "" {
+			walNodes++
+		}
 		if err := validateAddress(node.Repl.ListenAddr, true); err != nil {
 			return fmt.Errorf("%s.repl.listen_addr: %w", label, err)
 		}
@@ -127,6 +131,9 @@ func (m *Manifest) Validate() error {
 		if node.Engine.ShutdownTimeout.Duration <= 0 {
 			return fmt.Errorf("%s.engine.shutdown_timeout must be positive", label)
 		}
+	}
+	if walNodes != 0 && walNodes != len(m.Nodes) {
+		return errors.New("Raft requires repl.wal_path on every node in the manifest")
 	}
 	return nil
 }

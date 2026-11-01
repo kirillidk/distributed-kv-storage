@@ -47,7 +47,7 @@ func run(args []string, logger *slog.Logger) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	if err := repl.Run(ctx, *node, logger); err != nil {
+	if err := repl.Run(ctx, *node, logger, manifest.Nodes...); err != nil {
 		return fmt.Errorf("supervise node %q: %w", node.ID, err)
 	}
 	return nil

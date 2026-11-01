@@ -178,6 +178,7 @@ func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
 	}{
 		{"", healthpb.HealthCheckResponse_SERVING},
 		{replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING},
+		{replv1.RaftService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING},
 	} {
 		state, err := client.Check(requestCtx, &healthpb.HealthCheckRequest{Service: test.service})
 		if err != nil || state.GetStatus() != test.want {
@@ -186,6 +187,9 @@ func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
 	}
 	if _, err := replv1.NewReplServiceClient(conn).Propose(requestCtx, &replv1.ProposeRequest{Payload: []byte("not ready")}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("Propose during recovery: %v", err)
+	}
+	if _, err := replv1.NewRaftServiceClient(conn).RequestVote(requestCtx, &replv1.RequestVoteRequest{Term: 1, CandidateId: "outsider"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("Raft service unavailable during recovery: %v", err)
 	}
 	page, err := replv1.NewReplAdminServiceClient(conn).ReadLogs(requestCtx, &replv1.ReadLogsRequest{Component: replv1.LogComponent_LOG_COMPONENT_REPL})
 	if err != nil || !strings.Contains(string(page.GetData()), "repl starting") {
