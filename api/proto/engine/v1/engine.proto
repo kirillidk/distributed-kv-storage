@@ -18,7 +18,11 @@ message ApplyRequest {
   bytes payload = 2;
 }
 
-message ApplyResponse {}
+message ApplyResponse {
+  // Opaque engine-defined result. A business rejection is still an applied
+  // command; only failure to apply the log entry is an RPC error.
+  bytes result = 1;
+}
 
 message GetOffsetRequest {}
 

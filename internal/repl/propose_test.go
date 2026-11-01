@@ -26,6 +26,7 @@ type recordingEngine struct {
 	getOffsetCalls int
 	failNext       bool
 	walPath        string
+	result         []byte
 }
 
 func (e *recordingEngine) Apply(_ context.Context, in *enginev1.ApplyRequest, _ ...grpc.CallOption) (*enginev1.ApplyResponse, error) {
@@ -65,7 +66,7 @@ func (e *recordingEngine) Apply(_ context.Context, in *enginev1.ApplyRequest, _ 
 		}
 		e.offset = in.Offset
 	}
-	return &enginev1.ApplyResponse{}, nil
+	return &enginev1.ApplyResponse{Result: bytes.Clone(e.result)}, nil
 }
 
 func (e *recordingEngine) GetOffset(context.Context, *enginev1.GetOffsetRequest, ...grpc.CallOption) (*enginev1.GetOffsetResponse, error) {
@@ -82,7 +83,7 @@ func (e *recordingEngine) SetReady(context.Context, *enginev1.SetReadyRequest, .
 func TestProposePersistsOpaqueBytesAndDoesNotReplayPerRequest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal")
 	w := openTestWAL(t, path)
-	e := &recordingEngine{walPath: path}
+	e := &recordingEngine{walPath: path, result: []byte{0, 255, 128}}
 	s := &proposalServer{wal: w, engine: e}
 	ctx := context.Background()
 	if _, err := s.Propose(ctx, &replv1.ProposeRequest{Payload: []byte("before recovery")}); status.Code(err) != codes.Unavailable {
@@ -95,8 +96,8 @@ func TestProposePersistsOpaqueBytesAndDoesNotReplayPerRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, payload := range [][]byte{{0, 255, 7}, []byte("unknown-command"), {128, 0}} {
-		if _, err := s.Propose(ctx, &replv1.ProposeRequest{Payload: payload}); err != nil {
-			t.Fatal(err)
+		if resp, err := s.Propose(ctx, &replv1.ProposeRequest{Payload: payload}); err != nil || !bytes.Equal(resp.GetResult(), e.result) {
+			t.Fatalf("opaque result was not forwarded: %v %v", resp, err)
 		}
 	}
 	if err := s.recover(ctx); err != nil {

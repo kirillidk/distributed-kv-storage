@@ -76,7 +76,10 @@ func (x *ApplyRequest) GetPayload() []byte {
 }
 
 type ApplyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque engine-defined result. A business rejection is still an applied
+	// command; only failure to apply the log entry is an RPC error.
+	Result        []byte `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -109,6 +112,13 @@ func (x *ApplyResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ApplyResponse.ProtoReflect.Descriptor instead.
 func (*ApplyResponse) Descriptor() ([]byte, []int) {
 	return file_engine_v1_engine_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ApplyResponse) GetResult() []byte {
+	if x != nil {
+		return x.Result
+	}
+	return nil
 }
 
 type GetOffsetRequest struct {
@@ -280,8 +290,9 @@ const file_engine_v1_engine_proto_rawDesc = "" +
 	"\x16engine/v1/engine.proto\x12\tengine.v1\"@\n" +
 	"\fApplyRequest\x12\x16\n" +
 	"\x06offset\x18\x01 \x01(\x04R\x06offset\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\x0f\n" +
-	"\rApplyResponse\"\x12\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"'\n" +
+	"\rApplyResponse\x12\x16\n" +
+	"\x06result\x18\x01 \x01(\fR\x06result\"\x12\n" +
 	"\x10GetOffsetRequest\"+\n" +
 	"\x11GetOffsetResponse\x12\x16\n" +
 	"\x06offset\x18\x01 \x01(\x04R\x06offset\"'\n" +
