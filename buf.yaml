@@ -2,6 +2,7 @@ version: v2
 
 modules:
   - path: api/proto
+  - path: internal/repl/proto
 
 lint:
   use:

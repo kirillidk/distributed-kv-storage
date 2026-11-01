@@ -7,7 +7,7 @@ Distributed key-value storage written in Go. The project consists of separate
 
 - `api/proto` contains source contracts
 - `api/gen/go` contains generated messages and gRPC stubs
-- internal Raft RPCs belong to `repl`
+- `internal/repl/proto` and `internal/repl/gen/go` contain the repl-owned Raft protocol
 
 ## KV API v1
 
@@ -91,7 +91,7 @@ yet, so multi-node proposals return `Unimplemented` on the leader.
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are
-pinned in `buf.gen.yaml`.
+pinned in `buf.gen.yaml` and `internal/repl/buf.gen.yaml`.
 
 ```bash
 make format

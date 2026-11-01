@@ -16,6 +16,7 @@ import (
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"github.com/kirillidk/distributed-kv-storage/api/replication"
+	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
@@ -84,7 +85,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 		if len(cluster) == 0 {
 			cluster = []NodeConfig{node}
 		}
-		peers := make(map[string]replv1.RaftServiceClient, len(cluster)-1)
+		peers := make(map[string]raftv1.RaftServiceClient, len(cluster)-1)
 		seen := make(map[string]bool, len(cluster))
 		for _, peer := range cluster {
 			if peer.ID == "" || seen[peer.ID] || peer.Repl.WALPath == "" {
@@ -99,7 +100,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 				return fmt.Errorf("create Raft peer %q: %w", peer.ID, err)
 			}
 			defer peerConn.Close()
-			peers[peer.ID] = replv1.NewRaftServiceClient(peerConn)
+			peers[peer.ID] = raftv1.NewRaftServiceClient(peerConn)
 		}
 		if !seen[node.ID] {
 			return errors.New("local Raft node is missing from the cluster")
@@ -108,8 +109,8 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 		if err != nil {
 			return err
 		}
-		replv1.RegisterRaftServiceServer(server, raft)
-		healthServer.SetServingStatus(replv1.RaftService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+		raftv1.RegisterRaftServiceServer(server, raft)
+		healthServer.SetServingStatus(raftv1.RaftService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
 		healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
 		var readyMu sync.Mutex
 		var engineReady, leaderReady bool

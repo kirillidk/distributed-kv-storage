@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -49,10 +49,10 @@ type raftStatus struct {
 // and WAL appends are serialized by mu; network calls never hold that lock.
 // Membership is static and includes every node in the manifest, even offline ones.
 type raftNode struct {
-	replv1.UnimplementedRaftServiceServer
+	raftv1.UnimplementedRaftServiceServer
 	mu             sync.Mutex
 	id             string
-	peers          map[string]replv1.RaftServiceClient
+	peers          map[string]raftv1.RaftServiceClient
 	wal            *WAL
 	statePath      string
 	hard           raftHardState
@@ -72,7 +72,7 @@ type raftNode struct {
 	onLeaderChange func(bool)
 }
 
-func newRaftNode(id string, peers map[string]replv1.RaftServiceClient, wal *WAL, statePath string, timing raftTiming, logger *slog.Logger) (*raftNode, error) {
+func newRaftNode(id string, peers map[string]raftv1.RaftServiceClient, wal *WAL, statePath string, timing raftTiming, logger *slog.Logger) (*raftNode, error) {
 	if id == "" || wal == nil || statePath == "" {
 		return nil, errors.New("Raft requires a node ID, WAL and state path")
 	}
@@ -81,7 +81,7 @@ func newRaftNode(id string, peers map[string]replv1.RaftServiceClient, wal *WAL,
 		timing.rpcTimeout <= 0 || timing.rpcTimeout >= timing.electionMin {
 		return nil, errors.New("invalid Raft timing")
 	}
-	peerCopy := make(map[string]replv1.RaftServiceClient, len(peers))
+	peerCopy := make(map[string]raftv1.RaftServiceClient, len(peers))
 	for peerID, client := range peers {
 		if peerID == "" || peerID == id || client == nil {
 			return nil, errors.New("invalid Raft peer")
@@ -175,7 +175,7 @@ func (r *raftNode) higherTermLocked(term uint64) error {
 	return nil
 }
 
-func (r *raftNode) RequestVote(ctx context.Context, in *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error) {
+func (r *raftNode) RequestVote(ctx context.Context, in *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.availableLocked(ctx); err != nil {
@@ -188,7 +188,7 @@ func (r *raftNode) RequestVote(ctx context.Context, in *replv1.RequestVoteReques
 	if err := r.higherTermLocked(in.Term); err != nil {
 		return nil, err
 	}
-	response := &replv1.RequestVoteResponse{Term: r.hard.Term}
+	response := &raftv1.RequestVoteResponse{Term: r.hard.Term}
 	if in.Term < r.hard.Term || (r.hard.VotedFor != "" && r.hard.VotedFor != in.CandidateId) {
 		return response, nil
 	}
@@ -206,7 +206,7 @@ func (r *raftNode) RequestVote(ctx context.Context, in *replv1.RequestVoteReques
 	return response, nil
 }
 
-func (r *raftNode) AppendEntries(ctx context.Context, in *replv1.AppendEntriesRequest) (*replv1.AppendEntriesResponse, error) {
+func (r *raftNode) AppendEntries(ctx context.Context, in *raftv1.AppendEntriesRequest) (*raftv1.AppendEntriesResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.availableLocked(ctx); err != nil {
@@ -219,7 +219,7 @@ func (r *raftNode) AppendEntries(ctx context.Context, in *replv1.AppendEntriesRe
 	if err := r.higherTermLocked(in.Term); err != nil {
 		return nil, err
 	}
-	response := &replv1.AppendEntriesResponse{Term: r.hard.Term}
+	response := &raftv1.AppendEntriesResponse{Term: r.hard.Term}
 	if in.Term < r.hard.Term {
 		return response, nil
 	}
@@ -312,7 +312,7 @@ func (r *raftNode) startElectionLocked(ctx context.Context) {
 		return
 	}
 	index, term := r.wal.LastEntry()
-	request := &replv1.RequestVoteRequest{Term: r.hard.Term, CandidateId: r.id, LastLogIndex: index, LastLogTerm: term}
+	request := &raftv1.RequestVoteRequest{Term: r.hard.Term, CandidateId: r.id, LastLogIndex: index, LastLogTerm: term}
 	for id, peer := range r.peers {
 		r.workers.Add(1)
 		go func() {
@@ -359,7 +359,7 @@ func (r *raftNode) heartbeatsLocked(ctx context.Context) {
 	r.heartbeatDue = time.Now().Add(r.timing.heartbeat)
 	// No entries are replicated yet. The empty prefix (index/term zero) is
 	// common to every log and does not claim that any payload was replicated.
-	request := &replv1.AppendEntriesRequest{Term: r.hard.Term, LeaderId: r.id}
+	request := &raftv1.AppendEntriesRequest{Term: r.hard.Term, LeaderId: r.id}
 	for id, peer := range r.peers {
 		if r.heartbeatBusy[id] {
 			continue

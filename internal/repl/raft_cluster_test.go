@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -49,7 +49,7 @@ func newRaftTestCluster(t *testing.T, size, live int) *raftTestCluster {
 		c.listeners[i] = listener
 	}
 	for i := range size {
-		peers := make(map[string]replv1.RaftServiceClient)
+		peers := make(map[string]raftv1.RaftServiceClient)
 		for j := range size {
 			if i == j {
 				continue
@@ -59,7 +59,7 @@ func newRaftTestCluster(t *testing.T, size, live int) *raftTestCluster {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { conn.Close() })
-			peers[fmt.Sprintf("n%d", j)] = replv1.NewRaftServiceClient(conn)
+			peers[fmt.Sprintf("n%d", j)] = raftv1.NewRaftServiceClient(conn)
 		}
 		dir := t.TempDir()
 		wal := openTestWAL(t, filepath.Join(dir, "wal"))
@@ -69,7 +69,7 @@ func newRaftTestCluster(t *testing.T, size, live int) *raftTestCluster {
 		}
 		c.nodes[i] = node
 		c.servers[i] = grpc.NewServer()
-		replv1.RegisterRaftServiceServer(c.servers[i], node)
+		raftv1.RegisterRaftServiceServer(c.servers[i], node)
 	}
 	t.Cleanup(func() {
 		for i := range size {

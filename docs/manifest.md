@@ -86,7 +86,7 @@ accepting writes, so creating the log also persists its directory entry.
 
 When `wal_path` is configured, every node in the shared manifest is a voter and
 must have its own WAL. The supervisor connects to all other `repl.connect_addr`
-addresses and serves [`RaftService`](../api/proto/repl/v1/raft.proto) alongside
+addresses and serves [`RaftService`](../internal/repl/proto/repl/raft/v1/raft.proto) alongside
 health and logs, independently of engine recovery. Membership is static.
 
 Each election needs a strict majority of all configured nodes, including those
@@ -107,7 +107,7 @@ multi-node proposals return `Unimplemented` until log replication is implemented
 A follower or candidate returns `Unavailable` for proposals. Single-node writes
 become available after both election and engine recovery; the named
 `repl.v1.ReplService` health status reflects this. In multi-node clusters that
-health status stays NOT_SERVING, while `repl.v1.RaftService` reports SERVING.
+health status stays NOT_SERVING, while `repl.raft.v1.RaftService` reports SERVING.
 Role, term and leader ID changes appear in the repl diagnostic log.
 
 ### `nodes[].engine.connect_addr`

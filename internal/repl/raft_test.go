@@ -10,25 +10,25 @@ import (
 	"testing"
 	"time"
 
-	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 type raftClientStub struct {
-	vote   func(context.Context, *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error)
-	append func(context.Context, *replv1.AppendEntriesRequest) (*replv1.AppendEntriesResponse, error)
+	vote   func(context.Context, *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error)
+	append func(context.Context, *raftv1.AppendEntriesRequest) (*raftv1.AppendEntriesResponse, error)
 }
 
-func (s raftClientStub) RequestVote(ctx context.Context, in *replv1.RequestVoteRequest, _ ...grpc.CallOption) (*replv1.RequestVoteResponse, error) {
+func (s raftClientStub) RequestVote(ctx context.Context, in *raftv1.RequestVoteRequest, _ ...grpc.CallOption) (*raftv1.RequestVoteResponse, error) {
 	if s.vote != nil {
 		return s.vote(ctx, in)
 	}
 	return nil, status.Error(codes.Unavailable, "offline")
 }
 
-func (s raftClientStub) AppendEntries(ctx context.Context, in *replv1.AppendEntriesRequest, _ ...grpc.CallOption) (*replv1.AppendEntriesResponse, error) {
+func (s raftClientStub) AppendEntries(ctx context.Context, in *raftv1.AppendEntriesRequest, _ ...grpc.CallOption) (*raftv1.AppendEntriesResponse, error) {
 	if s.append != nil {
 		return s.append(ctx, in)
 	}
@@ -49,7 +49,7 @@ func testRaft(t *testing.T, terms ...uint64) *raftNode {
 	if err := saveRaftState(path, raftHardState{Term: lastTerm}); err != nil {
 		t.Fatal(err)
 	}
-	r, err := newRaftNode("n1", map[string]replv1.RaftServiceClient{"n2": raftClientStub{}, "n3": raftClientStub{}}, w, path, defaultRaftTiming, testLogger())
+	r, err := newRaftNode("n1", map[string]raftv1.RaftServiceClient{"n2": raftClientStub{}, "n3": raftClientStub{}}, w, path, defaultRaftTiming, testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestRequestVoteWALFreshness(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			r := testRaft(t, 1, 2)
 			due := r.electionDue
-			response, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{
+			response, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{
 				Term: 4, CandidateId: "n2", LastLogIndex: test.index, LastLogTerm: test.term,
 			})
 			if err != nil || response.Term != 4 || response.VoteGranted != test.grant {
@@ -101,7 +101,7 @@ func TestRequestVoteWALFreshness(t *testing.T) {
 func TestRequestVotePersistsOneVotePerTermAcrossRestart(t *testing.T) {
 	r := testRaft(t)
 	for _, id := range []string{"n2", "n2", "n3"} {
-		response, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 7, CandidateId: id})
+		response, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 7, CandidateId: id})
 		if err != nil || response.VoteGranted != (id == "n2") {
 			t.Fatalf("vote for %s: %v, %v", id, response, err)
 		}
@@ -113,11 +113,11 @@ func TestRequestVotePersistsOneVotePerTermAcrossRestart(t *testing.T) {
 		}
 	}
 	due := r.electionDue
-	response, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 6, CandidateId: "n3"})
+	response, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 6, CandidateId: "n3"})
 	if err != nil || response.Term != 7 || response.VoteGranted || !r.electionDue.Equal(due) {
 		t.Fatalf("stale vote: %v, %v", response, err)
 	}
-	response, err = r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 8, CandidateId: "n3"})
+	response, err = r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 8, CandidateId: "n3"})
 	if err != nil || !response.VoteGranted {
 		t.Fatalf("new term vote: %v, %v", response, err)
 	}
@@ -136,7 +136,7 @@ func TestAppendEntriesHeartbeatTermsAndConsistency(t *testing.T) {
 		t.Fatal(err)
 	}
 	due := r.electionDue
-	response, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: 2, LeaderId: "n2"})
+	response, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: 2, LeaderId: "n2"})
 	if err != nil || response.Success || response.Term != 3 || r.status().Role != candidate || !r.electionDue.Equal(due) {
 		t.Fatalf("stale heartbeat: %v %v %+v", response, err, r.status())
 	}
@@ -145,7 +145,7 @@ func TestAppendEntriesHeartbeatTermsAndConsistency(t *testing.T) {
 		term  uint64
 		match bool
 	}{{0, 0, true}, {1, 1, true}, {2, 2, true}, {3, 2, false}, {2, 1, false}} {
-		response, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{
+		response, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{
 			Term: 3, LeaderId: "n2", PrevLogIndex: test.index, PrevLogTerm: test.term, LeaderCommit: 2,
 		})
 		if err != nil || response.Success != test.match || r.status().Role != follower || r.status().LeaderID != "n2" {
@@ -153,13 +153,13 @@ func TestAppendEntriesHeartbeatTermsAndConsistency(t *testing.T) {
 		}
 		assertRaftStateOnDisk(t, r, 3, "n1") // Same-term heartbeat cannot erase our vote.
 	}
-	response, err = r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: 4, LeaderId: "n3"})
+	response, err = r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: 4, LeaderId: "n3"})
 	if err != nil || !response.Success || r.status().LeaderID != "n3" {
 		t.Fatalf("higher term heartbeat: %v, %v", response, err)
 	}
 	assertRaftStateOnDisk(t, r, 4, "")
-	_, err = r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{
-		Term: 4, LeaderId: "n3", Entries: []*replv1.LogEntry{{Term: 4, Payload: []byte("not supported")}},
+	_, err = r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{
+		Term: 4, LeaderId: "n3", Entries: []*raftv1.LogEntry{{Term: 4, Payload: []byte("not supported")}},
 	})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("nonempty AppendEntries: %v", err)
@@ -174,7 +174,7 @@ func TestElectionPersistsSelfVoteBeforeRPC(t *testing.T) {
 	r := testRaft(t, 2, 3)
 	var calls atomic.Int32
 	for id := range r.peers {
-		r.peers[id] = raftClientStub{vote: func(_ context.Context, in *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error) {
+		r.peers[id] = raftClientStub{vote: func(_ context.Context, in *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error) {
 			state, err := loadRaftState(r.statePath)
 			if err != nil || state.Term != in.Term || state.VotedFor != r.id {
 				t.Errorf("self vote was not durable before RPC: %+v, %v", state, err)
@@ -183,7 +183,7 @@ func TestElectionPersistsSelfVoteBeforeRPC(t *testing.T) {
 				t.Errorf("wrong WAL metadata: %v", in)
 			}
 			calls.Add(1)
-			return &replv1.RequestVoteResponse{Term: in.Term}, nil
+			return &raftv1.RequestVoteResponse{Term: in.Term}, nil
 		}}
 	}
 	r.mu.Lock()
@@ -198,7 +198,7 @@ func TestElectionPersistsSelfVoteBeforeRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := reopened.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 4, CandidateId: "n2", LastLogIndex: 2, LastLogTerm: 3})
+	response, err := reopened.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 4, CandidateId: "n2", LastLogIndex: 2, LastLogTerm: 3})
 	if err != nil || response.VoteGranted {
 		t.Fatalf("forgot self vote after restart: %v, %v", response, err)
 	}
@@ -209,14 +209,14 @@ func TestDelayedVotesCannotElectAfterStepDown(t *testing.T) {
 		t.Run(fmt.Sprintf("heartbeat-term-%d", term), func(t *testing.T) {
 			r := testRaft(t)
 			release := make(chan struct{})
-			r.peers["n2"] = raftClientStub{vote: func(_ context.Context, in *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error) {
+			r.peers["n2"] = raftClientStub{vote: func(_ context.Context, in *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error) {
 				<-release
-				return &replv1.RequestVoteResponse{Term: in.Term, VoteGranted: true}, nil
+				return &raftv1.RequestVoteResponse{Term: in.Term, VoteGranted: true}, nil
 			}}
 			r.mu.Lock()
 			r.startElectionLocked(context.Background())
 			r.mu.Unlock()
-			response, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: term, LeaderId: "n3"})
+			response, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: term, LeaderId: "n3"})
 			close(release)
 			r.workers.Wait()
 			if err != nil || !response.Success || r.status().Role != follower || r.status().Term != term {
@@ -231,18 +231,18 @@ func TestHigherTermRepliesStepDownAndPersist(t *testing.T) {
 		t.Run(fmt.Sprintf("heartbeat=%v", fromHeartbeat), func(t *testing.T) {
 			r := testRaft(t)
 			r.peers["n2"] = raftClientStub{
-				vote: func(_ context.Context, in *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error) {
+				vote: func(_ context.Context, in *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error) {
 					term := uint64(10)
 					if fromHeartbeat {
 						term = in.Term
 					}
-					return &replv1.RequestVoteResponse{Term: term, VoteGranted: fromHeartbeat}, nil
+					return &raftv1.RequestVoteResponse{Term: term, VoteGranted: fromHeartbeat}, nil
 				},
-				append: func(_ context.Context, in *replv1.AppendEntriesRequest) (*replv1.AppendEntriesResponse, error) {
+				append: func(_ context.Context, in *raftv1.AppendEntriesRequest) (*raftv1.AppendEntriesResponse, error) {
 					if len(in.Entries) != 0 || in.Term != 1 {
 						t.Errorf("unexpected heartbeat: %v", in)
 					}
-					return &replv1.AppendEntriesResponse{Term: 10}, nil
+					return &raftv1.AppendEntriesResponse{Term: 10}, nil
 				},
 			}
 			r.mu.Lock()
@@ -272,9 +272,9 @@ func TestRaftPersistenceFailureStopsVotingAndElections(t *testing.T) {
 			r := testRaft(t)
 			r.statePath = filepath.Join(t.TempDir(), "missing-directory", "state")
 			var calls atomic.Int32
-			r.peers["n2"] = raftClientStub{vote: func(context.Context, *replv1.RequestVoteRequest) (*replv1.RequestVoteResponse, error) {
+			r.peers["n2"] = raftClientStub{vote: func(context.Context, *raftv1.RequestVoteRequest) (*raftv1.RequestVoteResponse, error) {
 				calls.Add(1)
-				return &replv1.RequestVoteResponse{Term: 1, VoteGranted: true}, nil
+				return &raftv1.RequestVoteResponse{Term: 1, VoteGranted: true}, nil
 			}}
 			if duringElection {
 				r.mu.Lock()
@@ -282,7 +282,7 @@ func TestRaftPersistenceFailureStopsVotingAndElections(t *testing.T) {
 				r.mu.Unlock()
 				r.workers.Wait()
 			} else {
-				response, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 1, CandidateId: "n2"})
+				response, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 1, CandidateId: "n2"})
 				if status.Code(err) != codes.Unavailable || response != nil {
 					t.Fatalf("acknowledged unpersisted vote: %v, %v", response, err)
 				}
@@ -290,7 +290,7 @@ func TestRaftPersistenceFailureStopsVotingAndElections(t *testing.T) {
 			if calls.Load() != 0 || r.status().Role != follower || r.fatalErr == nil {
 				t.Fatal("continued election after persistence failure")
 			}
-			if _, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: 1, LeaderId: "n3"}); status.Code(err) != codes.Unavailable {
+			if _, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: 1, LeaderId: "n3"}); status.Code(err) != codes.Unavailable {
 				t.Fatalf("stopped node accepted heartbeat: %v", err)
 			}
 		})
@@ -300,10 +300,10 @@ func TestRaftPersistenceFailureStopsVotingAndElections(t *testing.T) {
 func TestRaftRejectsUnknownMembers(t *testing.T) {
 	r := testRaft(t)
 	due := r.electionDue
-	if _, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 50, CandidateId: "outsider"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 50, CandidateId: "outsider"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("unknown candidate: %v", err)
 	}
-	if _, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: 50, LeaderId: "outsider"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: 50, LeaderId: "outsider"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("unknown leader: %v", err)
 	}
 	if r.status().Term != 0 || !r.electionDue.Equal(due) {
@@ -349,12 +349,12 @@ func TestRaftRPCsRemainAvailableDuringEngineReplay(t *testing.T) {
 	<-started
 	done := make(chan error, 1)
 	go func() {
-		vote, err := r.RequestVote(context.Background(), &replv1.RequestVoteRequest{Term: 3, CandidateId: "n2", LastLogIndex: 1, LastLogTerm: 2})
+		vote, err := r.RequestVote(context.Background(), &raftv1.RequestVoteRequest{Term: 3, CandidateId: "n2", LastLogIndex: 1, LastLogTerm: 2})
 		if err != nil || !vote.GetVoteGranted() {
 			done <- fmt.Errorf("vote during replay: %v, %v", vote, err)
 			return
 		}
-		heartbeat, err := r.AppendEntries(context.Background(), &replv1.AppendEntriesRequest{Term: 3, LeaderId: "n2", PrevLogIndex: 1, PrevLogTerm: 2})
+		heartbeat, err := r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{Term: 3, LeaderId: "n2", PrevLogIndex: 1, PrevLogTerm: 2})
 		if err != nil || !heartbeat.GetSuccess() {
 			done <- fmt.Errorf("heartbeat during replay: %v, %v", heartbeat, err)
 			return

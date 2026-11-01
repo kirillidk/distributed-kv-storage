@@ -2,9 +2,9 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             (unknown)
-// source: repl/v1/raft.proto
+// source: repl/raft/v1/raft.proto
 
-package replv1
+package raftv1
 
 import (
 	context "context"
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RaftService_RequestVote_FullMethodName   = "/repl.v1.RaftService/RequestVote"
-	RaftService_AppendEntries_FullMethodName = "/repl.v1.RaftService/AppendEntries"
+	RaftService_RequestVote_FullMethodName   = "/repl.raft.v1.RaftService/RequestVote"
+	RaftService_AppendEntries_FullMethodName = "/repl.raft.v1.RaftService/AppendEntries"
 )
 
 // RaftServiceClient is the client API for RaftService service.
@@ -146,7 +146,7 @@ func _RaftService_AppendEntries_Handler(srv interface{}, ctx context.Context, de
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var RaftService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "repl.v1.RaftService",
+	ServiceName: "repl.raft.v1.RaftService",
 	HandlerType: (*RaftServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -159,5 +159,5 @@ var RaftService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "repl/v1/raft.proto",
+	Metadata: "repl/raft/v1/raft.proto",
 }

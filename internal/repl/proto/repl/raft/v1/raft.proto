@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package repl.v1;
+package repl.raft.v1;
 
-option go_package = "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1;replv1";
+option go_package = "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1;raftv1";
 
 // RaftService is the internal protocol between the manifest's repl nodes.
 service RaftService {
