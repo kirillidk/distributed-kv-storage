@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Component logs</title>
+  <style>
+    :root {
+      --bg: #0f1419; --card: #1a2332; --border: #2d3a4f;
+      --text: #e7ecf3; --muted: #8b9bb4;
+      --up: #3dd68c; --down: #f07178; --unknown: #ffcc66; --link: #7eb8ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; padding: 2rem;
+    }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-size: 1.3rem; margin: 0.5rem 0 0.35rem; }
+    .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.25rem; line-height: 1.5; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.55rem;
+      border-radius: 999px; font-size: 0.75rem; font-weight: 600;
+    }
+    .badge.UP { background: rgba(61,214,140,.15); color: var(--up); }
+    .badge.DOWN { background: rgba(240,113,120,.15); color: var(--down); }
+    .badge.UNKNOWN { background: rgba(255,204,102,.15); color: var(--unknown); }
+    table {
+      width: 100%; border-collapse: collapse;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
+    }
+    th, td {
+      text-align: left; padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border); font-size: 0.85rem;
+      vertical-align: top;
+    }
+    th { background: rgba(0,0,0,.25); color: var(--muted); font-size: 0.72rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    .empty { color: var(--muted); padding: 1.5rem; }
+    .footer { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+    .controls { margin-top: 1rem; }
+    button {
+      background: var(--card); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.6rem 1rem; font: inherit; cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <p><a href="/">← back to cluster</a></p>
+  <h1 id="title">Component logs</h1>
+  <p class="meta" id="meta">Loading…</p>
+  <table>
+    <thead><tr><th>Log line</th></tr></thead>
+    <tbody id="rows">
+      <tr><td class="empty">Loading…</td></tr>
+    </tbody>
+  </table>
+  <div class="controls">
+    <button id="load-more" type="button" disabled>Loading…</button>
+  </div>
+  <p class="footer" id="progress" role="status" aria-live="polite"></p>
+  <script>
+    const parts = location.pathname.split('/').filter(Boolean);
+    const nodeId = decodeURIComponent(parts[1] || '');
+    const type = decodeURIComponent(parts[2] || '');
+    const tbody = document.getElementById('rows');
+    const button = document.getElementById('load-more');
+    const progress = document.getElementById('progress');
+    const decoder = new TextDecoder();
+    let offset = 0;
+    let eof = false;
+    let loading = false;
+    let hasRows = false;
+    let currentLine = null;
+
+    // Keep a partial last line and the decoder between pages. EOF describes
+    // the current file size; a later read can complete that line or UTF-8 rune.
+    function appendText(text) {
+      if (!text) return;
+      if (!hasRows) {
+        tbody.replaceChildren();
+        hasRows = true;
+      }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (i === lines.length - 1 && lines[i] === '') break;
+        if (!currentLine) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          currentLine = document.createElement('pre');
+          td.appendChild(currentLine);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        }
+        currentLine.appendChild(document.createTextNode(lines[i]));
+        if (i < lines.length - 1) currentLine = null;
+      }
+    }
+
+    async function load() {
+      if (loading) return;
+      loading = true;
+      button.disabled = true;
+      button.textContent = 'Loading…';
+      progress.textContent = '';
+      let failed = false;
+      try {
+        const res = await fetch(
+          '/api/v1/components/' + encodeURIComponent(nodeId) + '/' +
+          encodeURIComponent(type) + '/logs?offset=' + offset
+        );
+        if (res.status === 404) throw new Error('Component not found');
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+
+        document.getElementById('title').textContent =
+          (data.node_id || '-') + ' · ' + (data.type || '');
+        document.getElementById('meta').innerHTML =
+          'address: ' + esc(data.address || '-') +
+          ' · status: <span class="badge ' + esc(data.status || 'UNKNOWN') + '">' +
+          esc(data.status || 'UNKNOWN') + '</span>' +
+          (data.repl_addr ? ' · via repl: ' + esc(data.repl_addr) : '');
+
+        if (data.fetch_error) throw new Error(data.fetch_error);
+        const bytes = Uint8Array.from(atob(data.data || ''), c => c.charCodeAt(0));
+        if (!Number.isSafeInteger(data.next_offset) ||
+            data.next_offset !== offset + bytes.length ||
+            (bytes.length === 0 && !data.eof)) {
+          throw new Error('Invalid log page');
+        }
+        appendText(decoder.decode(bytes, { stream: true }));
+        offset = data.next_offset;
+        eof = data.eof;
+        if (!hasRows) {
+          tbody.innerHTML = '<tr><td class="empty">No log lines yet</td></tr>';
+        }
+        progress.textContent = eof
+          ? 'End of current log. Check again to see new entries.'
+          : 'More logs are available.';
+      } catch (err) {
+        failed = true;
+        progress.textContent = 'Could not load logs: ' + err.message;
+        if (!hasRows) {
+          tbody.innerHTML = '<tr><td class="empty">Logs could not be loaded</td></tr>';
+        }
+      } finally {
+        loading = false;
+        button.disabled = false;
+        button.textContent = failed ? 'Retry' : (eof ? 'Check for new logs' : 'Load more');
+      }
+    }
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
+    }
+    button.addEventListener('click', load);
+    load();
+  </script>
+</body>
+</html>

@@ -5,15 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cluster Status</title>
   <style>
-    :root {
-      --bg: #ffffff;
-      --card: #ffffff;
-      --border: #e5e7eb;
-      --text: #111827;
-      --muted: #6b7280;
-      --up: #22910c;
-      --down: #ff0040c0;
-      --unknown: #f8b541;
+        :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --up: #3dd68c;
+      --down: #f07178;
+      --unknown: #ffcc66;
+      --link: #7eb8ff;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -50,7 +51,7 @@
       font-size: 0.9rem;
     }
     th {
-      background: #f8fafc;
+      background: rgba(0,0,0,0.25);
       color: var(--muted);
       font-size: 0.75rem;
       text-transform: uppercase;
@@ -73,6 +74,13 @@
     .dot.UP { background: var(--up); }
     .dot.DOWN { background: var(--down); }
     .dot.UNKNOWN { background: var(--unknown); }
+    a.comp-link {
+      color: var(--link, #7eb8ff);
+      text-decoration: none;
+    }
+    a.comp-link:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 
@@ -128,7 +136,17 @@
           };
 
           addText(c.node_id || '-');
-          addText(c.type || '');
+
+          const typeTd = document.createElement('td');
+          const typeLink = document.createElement('a');
+          typeLink.href = '/components/' +
+            encodeURIComponent(c.node_id || '') + '/' +
+            encodeURIComponent(c.type || '') + '/logs';
+          typeLink.textContent = c.type || '';
+          typeLink.className = 'comp-link';
+          typeTd.appendChild(typeLink);
+          tr.appendChild(typeTd);
+
           addText(c.address || '');
 
           const statusTd = document.createElement('td');

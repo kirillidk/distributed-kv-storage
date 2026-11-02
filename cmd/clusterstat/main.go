@@ -36,7 +36,7 @@ func main() {
 		col.Run(ctx)
 	}()
 
-	srv := server.New(cfg.Listen, col)
+	srv := server.New(cfg.Listen, col, cfg.Components, cfg.CheckTimeout)
 
 	errCh := make(chan error, 1)
 	go func() {
