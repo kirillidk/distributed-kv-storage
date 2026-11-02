@@ -21,6 +21,7 @@ type proposalServer struct {
 	replv1.UnimplementedReplServiceServer
 	mu       sync.Mutex
 	wal      *WAL
+	raft     *raftNode
 	engine   enginev1.EngineServiceClient
 	ready    bool
 	setReady func(bool)
@@ -54,9 +55,18 @@ func (s *proposalServer) Propose(ctx context.Context, in *replv1.ProposeRequest)
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	offset, err := s.wal.Append(in.Payload)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+	var offset uint64
+	var err error
+	if s.raft != nil {
+		offset, err = s.raft.appendProposal(ctx, in.Payload)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		offset, err = s.wal.Append(in.Payload)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 	}
 	result, err := s.apply(ctx, offset, in.Payload)
 	if err != nil {

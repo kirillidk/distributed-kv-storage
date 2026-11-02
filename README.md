@@ -7,7 +7,7 @@ Distributed key-value storage written in Go. The project consists of separate
 
 - `api/proto` contains source contracts
 - `api/gen/go` contains generated messages and gRPC stubs
-- internal Raft RPCs belong to `repl`
+- `internal/repl/proto` and `internal/repl/gen/go` contain the repl-owned Raft protocol
 
 ## KV API v1
 
@@ -82,10 +82,16 @@ nodes:
 
 See [the manifest documentation](docs/manifest.md) for the field descriptions.
 
+With `wal_path` on every node, repl elects a Raft leader using majority voting,
+WAL freshness checks, randomized election timeouts and empty AppendEntries
+heartbeats. Term and votedFor survive restarts in `<wal_path>.raft-state`.
+Single-node writes are supported; multi-node log replication is not implemented
+yet, so multi-node proposals return `Unimplemented` on the leader.
+
 ## Development
 
 Go and [Buf](https://buf.build/docs/cli/) are required. Generator versions are
-pinned in `buf.gen.yaml`.
+pinned in `buf.gen.yaml` and `internal/repl/buf.gen.yaml`.
 
 ```bash
 make format

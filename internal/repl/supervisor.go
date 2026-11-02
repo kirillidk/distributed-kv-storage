@@ -16,18 +16,21 @@ import (
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"github.com/kirillidk/distributed-kv-storage/api/replication"
+	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run serves node health and logs, and supervises the local engine until ctx is canceled.
-func Run(ctx context.Context, node NodeConfig, logger *slog.Logger) error {
-	return runOnListener(ctx, node, logger, nil)
+// Run serves node health, logs and Raft, and supervises the local engine until
+// ctx is canceled. cluster must include all voters, including the local node.
+// Omitting cluster starts a single-node deployment.
+func Run(ctx context.Context, node NodeConfig, logger *slog.Logger, cluster ...NodeConfig) error {
+	return runOnListener(ctx, node, logger, nil, cluster...)
 }
 
-func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) (runErr error) {
+func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener, cluster ...NodeConfig) (runErr error) {
 	if listener != nil {
 		defer listener.Close()
 	}
@@ -67,6 +70,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(replication.MaxMessageSize))
 	replv1.RegisterReplAdminServiceServer(server, &replAdminServer{logs: logs})
 	var proposals *proposalServer
+	var raft *raftNode
 	if node.Repl.WALPath != "" {
 		wal, err := OpenWAL(node.Repl.WALPath)
 		if err != nil {
@@ -78,15 +82,58 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 			return fmt.Errorf("create engine client: %w", err)
 		}
 		defer conn.Close()
+		if len(cluster) == 0 {
+			cluster = []NodeConfig{node}
+		}
+		peers := make(map[string]raftv1.RaftServiceClient, len(cluster)-1)
+		seen := make(map[string]bool, len(cluster))
+		for _, peer := range cluster {
+			if peer.ID == "" || seen[peer.ID] || peer.Repl.WALPath == "" {
+				return errors.New("Raft requires unique node IDs and a WAL on every node")
+			}
+			seen[peer.ID] = true
+			if peer.ID == node.ID {
+				continue
+			}
+			peerConn, err := grpc.NewClient(peer.Repl.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				return fmt.Errorf("create Raft peer %q: %w", peer.ID, err)
+			}
+			defer peerConn.Close()
+			peers[peer.ID] = raftv1.NewRaftServiceClient(peerConn)
+		}
+		if !seen[node.ID] {
+			return errors.New("local Raft node is missing from the cluster")
+		}
+		raft, err = newRaftNode(node.ID, peers, wal, node.Repl.WALPath+".raft-state", defaultRaftTiming, logger)
+		if err != nil {
+			return err
+		}
+		raftv1.RegisterRaftServiceServer(server, raft)
+		healthServer.SetServingStatus(raftv1.RaftService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
 		healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
+		var readyMu sync.Mutex
+		var engineReady, leaderReady bool
+		updateReady := func() {
+			state := healthpb.HealthCheckResponse_NOT_SERVING
+			if engineReady && leaderReady && len(peers) == 0 {
+				state = healthpb.HealthCheckResponse_SERVING
+			}
+			healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)
+		}
+		raft.onLeaderChange = func(ready bool) {
+			readyMu.Lock()
+			defer readyMu.Unlock()
+			leaderReady = ready
+			updateReady()
+		}
 		proposals = &proposalServer{
-			wal: wal, engine: enginev1.NewEngineServiceClient(conn),
+			wal: wal, raft: raft, engine: enginev1.NewEngineServiceClient(conn),
 			setReady: func(ready bool) {
-				state := healthpb.HealthCheckResponse_NOT_SERVING
-				if ready {
-					state = healthpb.HealthCheckResponse_SERVING
-				}
-				healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)
+				readyMu.Lock()
+				defer readyMu.Unlock()
+				engineReady = ready
+				updateReady()
 			},
 		}
 		replv1.RegisterReplServiceServer(server, proposals)
@@ -94,6 +141,13 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	healthpb.RegisterHealthServer(server, healthServer)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
+	raftCtx, stopRaft := context.WithCancel(ctx)
+	defer stopRaft()
+	var raftDone chan error
+	if raft != nil {
+		raftDone = make(chan error, 1)
+		go func() { raftDone <- raft.run(raftCtx) }()
+	}
 
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	supervisorDone := make(chan error, 1)
@@ -103,11 +157,14 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 
 	supervisorFinished := false
 	serverFinished := false
+	raftFinished := false
 	select {
 	case <-ctx.Done():
 	case runErr = <-supervisorDone:
 		supervisorFinished = true
 	case runErr = <-logErrors:
+	case runErr = <-raftDone:
+		raftFinished = true
 	case err := <-serveDone:
 		serverFinished = true
 		if ctx.Err() == nil {
@@ -120,7 +177,13 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	}
 
 	healthServer.Shutdown()
+	stopRaft()
 	stopSupervisor()
+	if raftDone != nil && !raftFinished {
+		if err := <-raftDone; runErr == nil {
+			runErr = err
+		}
+	}
 	if !supervisorFinished {
 		if err := <-supervisorDone; runErr == nil {
 			runErr = err
