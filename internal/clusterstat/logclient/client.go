@@ -17,6 +17,8 @@ type Client struct {
 	timeout  time.Duration
 }
 
+const PageBytes = 256 * 1024
+
 func New(components []config.Component, timeout time.Duration) *Client {
 	m := make(map[string]string)
 	for _, c := range components {
@@ -42,13 +44,15 @@ func toLogComponent(typ config.ComponentType) (replv1.LogComponent, error) {
 }
 
 type Result struct {
+	// Data preserves bytes split across pages, including partial UTF-8 characters.
+	Data       []byte
 	Lines      []string
 	NextOffset uint64
 	EOF        bool
 	ReplAddr   string
 }
 
-func (c *Client) ReadSnapshot(ctx context.Context, nodeID string, typ config.ComponentType, maxTotal int) (*Result, error) {
+func (c *Client) ReadPage(ctx context.Context, nodeID string, typ config.ComponentType, offset uint64, maxTotal int) (*Result, error) {
 	addr, ok := c.replAddr[nodeID]
 	if !ok {
 		return nil, fmt.Errorf("no repl address for node %q", nodeID)
@@ -57,8 +61,8 @@ func (c *Client) ReadSnapshot(ctx context.Context, nodeID string, typ config.Com
 	if err != nil {
 		return nil, err
 	}
-	if maxTotal <= 0 {
-		maxTotal = 256 * 1024
+	if maxTotal <= 0 || maxTotal > PageBytes {
+		maxTotal = PageBytes
 	}
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -68,20 +72,25 @@ func (c *Client) ReadSnapshot(ctx context.Context, nodeID string, typ config.Com
 	defer conn.Close()
 
 	cli := replv1.NewReplAdminServiceClient(conn)
-	var raw []byte
-	var offset uint64
+	raw := []byte{}
 	var eof bool
 
 	for len(raw) < maxTotal {
+		maxBytes := min(64*1024, maxTotal-len(raw))
 		reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 		resp, err := cli.ReadLogs(reqCtx, &replv1.ReadLogsRequest{
 			Component: comp,
 			Offset:    offset,
-			MaxBytes:  64 * 1024,
+			MaxBytes:  uint32(maxBytes),
 		})
 		cancel()
 		if err != nil {
 			return nil, err
+		}
+		if len(resp.GetData()) > maxBytes || resp.GetNextOffset() < offset ||
+			resp.GetNextOffset()-offset != uint64(len(resp.GetData())) ||
+			(len(resp.GetData()) == 0 && !resp.GetEof()) {
+			return nil, fmt.Errorf("invalid ReadLogs page")
 		}
 		raw = append(raw, resp.GetData()...)
 		offset = resp.GetNextOffset()
@@ -92,6 +101,7 @@ func (c *Client) ReadSnapshot(ctx context.Context, nodeID string, typ config.Com
 	}
 
 	return &Result{
+		Data:       raw,
 		Lines:      splitLines(string(raw)),
 		NextOffset: offset,
 		EOF:        eof,

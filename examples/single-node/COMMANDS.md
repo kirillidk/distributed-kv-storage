@@ -81,13 +81,13 @@ docker compose -f examples/single-node/compose.yaml \
 http://127.0.0.1:8080
 ```
 
-## Repl logs in browser (refresh manually)
+## Repl logs in browser (Load more)
 
 ```text
 http://127.0.0.1:8080/components/node-1/repl/logs
 ```
 
-## Engine logs in browser (refresh manually)
+## Engine logs in browser (Load more)
 
 ```text
 http://127.0.0.1:8080/components/node-1/kv-engine/logs
@@ -113,6 +113,12 @@ curl http://127.0.0.1:8080/api/v1/components/node-1/repl/logs
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/components/node-1/kv-engine/logs
+```
+
+## Engine logs API from byte offset
+
+```bash
+curl 'http://127.0.0.1:8080/api/v1/components/node-1/kv-engine/logs?offset=262144'
 ```
 
 ## Container shell

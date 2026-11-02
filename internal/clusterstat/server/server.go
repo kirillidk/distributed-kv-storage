@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
@@ -127,29 +128,46 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := s.logs.ReadSnapshot(r.Context(), nodeID, typ, 256*1024)
+	var offset uint64
+	if values, ok := r.URL.Query()["offset"]; ok {
+		if len(values) != 1 {
+			http.Error(w, "offset must be a single unsigned integer", http.StatusBadRequest)
+			return
+		}
+		var err error
+		offset, err = strconv.ParseUint(values[0], 10, 64)
+		if err != nil {
+			http.Error(w, "offset must be an unsigned 64-bit integer", http.StatusBadRequest)
+			return
+		}
+	}
+	result, err := s.logs.ReadPage(r.Context(), nodeID, typ, offset, logclient.PageBytes)
 
 	type respBody struct {
-		NodeID     string   `json:"node_id"`
-		Type       string   `json:"type"`
-		Address    string   `json:"address"`
-		Status     string   `json:"status"`
-		Error      string   `json:"error"`
-		Source     string   `json:"source"`
-		ReplAddr   string   `json:"repl_addr,omitempty"`
-		NextOffset uint64   `json:"next_offset"`
-		EOF        bool     `json:"eof"`
+		NodeID     string `json:"node_id"`
+		Type       string `json:"type"`
+		Address    string `json:"address"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
+		Source     string `json:"source"`
+		ReplAddr   string `json:"repl_addr,omitempty"`
+		NextOffset uint64 `json:"next_offset"`
+		EOF        bool   `json:"eof"`
+		// JSON encodes bytes as base64, preserving partial UTF-8 between pages.
+		Data       []byte   `json:"data"`
 		Lines      []string `json:"lines"`
 		FetchError string   `json:"fetch_error,omitempty"`
 	}
 	out := respBody{
-		NodeID:  st.NodeID,
-		Type:    string(st.Type),
-		Address: st.Address,
-		Status:  string(st.Status),
-		Error:   st.Error,
-		Source:  "repl.v1.ReplAdminService.ReadLogs",
-		Lines:   []string{},
+		NodeID:     st.NodeID,
+		Type:       string(st.Type),
+		Address:    st.Address,
+		Status:     string(st.Status),
+		Error:      st.Error,
+		Source:     "repl.v1.ReplAdminService.ReadLogs",
+		NextOffset: offset,
+		Data:       []byte{},
+		Lines:      []string{},
 	}
 	if err != nil {
 		out.FetchError = err.Error()
@@ -157,6 +175,7 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 		out.ReplAddr = result.ReplAddr
 		out.NextOffset = result.NextOffset
 		out.EOF = result.EOF
+		out.Data = result.Data
 		out.Lines = result.Lines
 	}
 

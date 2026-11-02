@@ -41,6 +41,12 @@
     tr:last-child td { border-bottom: none; }
     .empty { color: var(--muted); padding: 1.5rem; }
     .footer { margin-top: 1rem; color: var(--muted); font-size: 0.8rem; }
+    .controls { margin-top: 1rem; }
+    button {
+      background: var(--card); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.6rem 1rem; font: inherit; cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
     pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
@@ -54,27 +60,61 @@
       <tr><td class="empty">Loading…</td></tr>
     </tbody>
   </table>
-  <p class="footer">
-    Process logs via ReplAdminService.ReadLogs (stdout/stderr). Snapshot only — no live refresh.
-  </p>
+  <div class="controls">
+    <button id="load-more" type="button" disabled>Loading…</button>
+  </div>
+  <p class="footer" id="progress" role="status" aria-live="polite"></p>
   <script>
     const parts = location.pathname.split('/').filter(Boolean);
     const nodeId = decodeURIComponent(parts[1] || '');
     const type = decodeURIComponent(parts[2] || '');
+    const tbody = document.getElementById('rows');
+    const button = document.getElementById('load-more');
+    const progress = document.getElementById('progress');
+    const decoder = new TextDecoder();
+    let offset = 0;
+    let eof = false;
+    let loading = false;
+    let hasRows = false;
+    let currentLine = null;
+
+    // Keep a partial last line and the decoder between pages. EOF describes
+    // the current file size; a later read can complete that line or UTF-8 rune.
+    function appendText(text) {
+      if (!text) return;
+      if (!hasRows) {
+        tbody.replaceChildren();
+        hasRows = true;
+      }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (i === lines.length - 1 && lines[i] === '') break;
+        if (!currentLine) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          currentLine = document.createElement('pre');
+          td.appendChild(currentLine);
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        }
+        currentLine.appendChild(document.createTextNode(lines[i]));
+        if (i < lines.length - 1) currentLine = null;
+      }
+    }
 
     async function load() {
-      const tbody = document.getElementById('rows');
+      if (loading) return;
+      loading = true;
+      button.disabled = true;
+      button.textContent = 'Loading…';
+      progress.textContent = '';
+      let failed = false;
       try {
         const res = await fetch(
           '/api/v1/components/' + encodeURIComponent(nodeId) + '/' +
-          encodeURIComponent(type) + '/logs'
+          encodeURIComponent(type) + '/logs?offset=' + offset
         );
-        if (res.status === 404) {
-          document.getElementById('title').textContent = 'Not found';
-          document.getElementById('meta').textContent = 'Unknown: ' + nodeId + ' / ' + type;
-          tbody.innerHTML = '<tr><td class="empty">No such component</td></tr>';
-          return;
-        }
+        if (res.status === 404) throw new Error('Component not found');
         if (!res.ok) throw new Error(res.statusText);
         const data = await res.json();
 
@@ -86,28 +126,32 @@
           esc(data.status || 'UNKNOWN') + '</span>' +
           (data.repl_addr ? ' · via repl: ' + esc(data.repl_addr) : '');
 
-        tbody.innerHTML = '';
-        if (data.fetch_error) {
-          tbody.innerHTML = '<tr><td class="empty">fetch error: ' + esc(data.fetch_error) +
-            '<br><br>Need a running repl with log_dir in cluster.yaml</td></tr>';
-          return;
+        if (data.fetch_error) throw new Error(data.fetch_error);
+        const bytes = Uint8Array.from(atob(data.data || ''), c => c.charCodeAt(0));
+        if (!Number.isSafeInteger(data.next_offset) ||
+            data.next_offset !== offset + bytes.length ||
+            (bytes.length === 0 && !data.eof)) {
+          throw new Error('Invalid log page');
         }
-        const lines = data.lines || [];
-        if (lines.length === 0) {
+        appendText(decoder.decode(bytes, { stream: true }));
+        offset = data.next_offset;
+        eof = data.eof;
+        if (!hasRows) {
           tbody.innerHTML = '<tr><td class="empty">No log lines yet</td></tr>';
-          return;
         }
-        for (const line of lines) {
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          const pre = document.createElement('pre');
-          pre.textContent = line;
-          td.appendChild(pre);
-          tr.appendChild(td);
-          tbody.appendChild(tr);
-        }
+        progress.textContent = eof
+          ? 'End of current log. Check again to see new entries.'
+          : 'More logs are available.';
       } catch (err) {
-        tbody.innerHTML = '<tr><td class="empty">error: ' + esc(err.message) + '</td></tr>';
+        failed = true;
+        progress.textContent = 'Could not load logs: ' + err.message;
+        if (!hasRows) {
+          tbody.innerHTML = '<tr><td class="empty">Logs could not be loaded</td></tr>';
+        }
+      } finally {
+        loading = false;
+        button.disabled = false;
+        button.textContent = failed ? 'Retry' : (eof ? 'Check for new logs' : 'Load more');
       }
     }
     function esc(s) {
@@ -115,6 +159,7 @@
       d.textContent = s == null ? '' : String(s);
       return d.innerHTML;
     }
+    button.addEventListener('click', load);
     load();
   </script>
 </body>
