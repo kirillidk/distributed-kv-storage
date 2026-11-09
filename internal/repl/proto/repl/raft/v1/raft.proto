@@ -33,12 +33,14 @@ message AppendEntriesRequest {
   string leader_id = 2;
   uint64 prev_log_index = 3;
   uint64 prev_log_term = 4;
-  // Only empty entries (heartbeats) are supported at this stage.
+  // Entries immediately following prev_log_index; empty for a heartbeat.
   repeated LogEntry entries = 5;
+  // Committed Raft record index, not an engine byte offset.
   uint64 leader_commit = 6;
 }
 
 message AppendEntriesResponse {
   uint64 term = 1;
+  // True only after the matching prefix, including entries, is durable.
   bool success = 2;
 }

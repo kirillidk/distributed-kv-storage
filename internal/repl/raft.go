@@ -39,13 +39,14 @@ var defaultRaftTiming = raftTiming{
 }
 
 type raftStatus struct {
-	Role     raftRole
-	Term     uint64
-	VotedFor string
-	LeaderID string
+	Role         raftRole
+	Term         uint64
+	VotedFor     string
+	LeaderID     string
+	CommitOffset uint64
 }
 
-// raftNode implements elections and empty AppendEntries. All state transitions
+// raftNode implements elections, log replication and quorum commit. All state transitions
 // and WAL appends are serialized by mu; network calls never hold that lock.
 // Membership is static and includes every node in the manifest, even offline ones.
 type raftNode struct {
@@ -63,6 +64,11 @@ type raftNode struct {
 	electionDue    time.Time
 	heartbeatDue   time.Time
 	heartbeatBusy  map[string]bool
+	nextIndex      map[string]uint64
+	matchIndex     map[string]uint64
+	commitOffset   uint64
+	changed        chan struct{}
+	commitReady    chan struct{}
 	wake           chan struct{}
 	workers        sync.WaitGroup
 	started        bool
@@ -99,6 +105,10 @@ func newRaftNode(id string, peers map[string]raftv1.RaftServiceClient, wal *WAL,
 	if hard.Term < lastTerm {
 		return nil, errors.New("Raft state term is older than the WAL")
 	}
+	commitOffset, _, err := wal.EntryMeta(hard.CommitIndex)
+	if err != nil {
+		return nil, fmt.Errorf("committed Raft prefix is missing from WAL: %w", err)
+	}
 	if hard.VotedFor != "" && hard.VotedFor != id && peerCopy[hard.VotedFor] == nil {
 		return nil, errors.New("persisted Raft vote is outside the cluster")
 	}
@@ -111,6 +121,7 @@ func newRaftNode(id string, peers map[string]raftv1.RaftServiceClient, wal *WAL,
 		id: id, peers: peerCopy, wal: wal, statePath: statePath, hard: hard,
 		role: follower, timing: timing, wake: make(chan struct{}, 1),
 		heartbeatBusy: make(map[string]bool), logger: logger,
+		commitOffset: commitOffset, changed: make(chan struct{}), commitReady: make(chan struct{}, 1),
 	}
 	r.resetElectionLocked()
 	return r, nil
@@ -119,7 +130,7 @@ func newRaftNode(id string, peers map[string]raftv1.RaftServiceClient, wal *WAL,
 func (r *raftNode) status() raftStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return raftStatus{Role: r.role, Term: r.hard.Term, VotedFor: r.hard.VotedFor, LeaderID: r.leaderID}
+	return raftStatus{Role: r.role, Term: r.hard.Term, VotedFor: r.hard.VotedFor, LeaderID: r.leaderID, CommitOffset: r.commitOffset}
 }
 
 func (r *raftNode) signalLocked() {
@@ -140,6 +151,7 @@ func (r *raftNode) roleLocked(role raftRole, leaderID string) {
 		r.logger.Info("raft role changed", "node_id", r.id, "role", role, "term", r.hard.Term, "leader_id", leaderID)
 	}
 	r.role, r.leaderID = role, leaderID
+	r.notifyChangedLocked()
 	if r.onLeaderChange != nil && wasLeader != (role == leader) {
 		r.onLeaderChange(role == leader)
 	}
@@ -168,7 +180,7 @@ func (r *raftNode) higherTermLocked(term uint64) error {
 	if term <= r.hard.Term {
 		return nil
 	}
-	if err := r.persistLocked(raftHardState{Term: term}); err != nil {
+	if err := r.persistLocked(raftHardState{Term: term, CommitIndex: r.hard.CommitIndex}); err != nil {
 		return err
 	}
 	r.roleLocked(follower, "")
@@ -196,7 +208,7 @@ func (r *raftNode) RequestVote(ctx context.Context, in *raftv1.RequestVoteReques
 	if in.LastLogTerm < term || (in.LastLogTerm == term && in.LastLogIndex < index) {
 		return response, nil
 	}
-	if err := r.persistLocked(raftHardState{Term: in.Term, VotedFor: in.CandidateId}); err != nil {
+	if err := r.persistLocked(raftHardState{Term: in.Term, VotedFor: in.CandidateId, CommitIndex: r.hard.CommitIndex}); err != nil {
 		return nil, err
 	}
 	// Rejected votes, including stale-log candidates in a higher term, must not
@@ -212,9 +224,8 @@ func (r *raftNode) AppendEntries(ctx context.Context, in *raftv1.AppendEntriesRe
 	if err := r.availableLocked(ctx); err != nil {
 		return nil, err
 	}
-	if in == nil || in.Term == 0 || r.peers[in.LeaderId] == nil ||
-		in.PrevLogTerm > in.Term || (in.PrevLogIndex == 0 && in.PrevLogTerm != 0) {
-		return nil, status.Error(codes.InvalidArgument, "invalid AppendEntries or unknown leader")
+	if err := r.validateAppendLocked(in); err != nil {
+		return nil, err
 	}
 	if err := r.higherTermLocked(in.Term); err != nil {
 		return nil, err
@@ -225,12 +236,13 @@ func (r *raftNode) AppendEntries(ctx context.Context, in *raftv1.AppendEntriesRe
 	}
 	r.roleLocked(follower, in.LeaderId)
 	r.resetElectionLocked()
-	if len(in.Entries) != 0 {
-		return nil, status.Error(codes.Unimplemented, "only empty AppendEntries are supported")
+	if !r.wal.Matches(in.PrevLogIndex, in.PrevLogTerm) {
+		return response, nil
 	}
-	// Empty AppendEntries still perform the log consistency check. They never
-	// truncate a suffix, append a record or advance the engine's applied offset.
-	response.Success = r.wal.Matches(in.PrevLogIndex, in.PrevLogTerm)
+	if err := r.receiveEntriesLocked(in); err != nil {
+		return nil, err
+	}
+	response.Success = true
 	return response, nil
 }
 
@@ -301,7 +313,7 @@ func (r *raftNode) startElectionLocked(ctx context.Context) {
 		r.failLocked(errors.New("Raft term exhausted"))
 		return
 	}
-	if err := r.persistLocked(raftHardState{Term: r.hard.Term + 1, VotedFor: r.id}); err != nil {
+	if err := r.persistLocked(raftHardState{Term: r.hard.Term + 1, VotedFor: r.id, CommitIndex: r.hard.CommitIndex}); err != nil {
 		return
 	}
 	r.roleLocked(candidate, "")
@@ -351,53 +363,12 @@ func (r *raftNode) hasMajorityLocked() bool {
 }
 
 func (r *raftNode) becomeLeaderLocked() {
+	last, _ := r.wal.LastEntry()
+	r.nextIndex = make(map[string]uint64, len(r.peers))
+	r.matchIndex = make(map[string]uint64, len(r.peers))
+	for id := range r.peers {
+		r.nextIndex[id] = last + 1
+	}
 	r.roleLocked(leader, r.id)
 	r.heartbeatDue = time.Time{} // Send the first heartbeat immediately.
-}
-
-func (r *raftNode) heartbeatsLocked(ctx context.Context) {
-	r.heartbeatDue = time.Now().Add(r.timing.heartbeat)
-	// No entries are replicated yet. The empty prefix (index/term zero) is
-	// common to every log and does not claim that any payload was replicated.
-	request := &raftv1.AppendEntriesRequest{Term: r.hard.Term, LeaderId: r.id}
-	for id, peer := range r.peers {
-		if r.heartbeatBusy[id] {
-			continue
-		}
-		r.heartbeatBusy[id] = true
-		r.workers.Add(1)
-		go func() {
-			defer r.workers.Done()
-			rpcCtx, cancel := context.WithTimeout(ctx, r.timing.rpcTimeout)
-			defer cancel()
-			response, err := peer.AppendEntries(rpcCtx, request)
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.heartbeatBusy[id] = false
-			if !r.stopped && err == nil && response != nil && response.Term > r.hard.Term {
-				if err := r.higherTermLocked(response.Term); err == nil {
-					r.resetElectionLocked()
-				}
-			}
-		}()
-	}
-}
-
-func (r *raftNode) appendProposal(ctx context.Context, payload []byte) (uint64, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.availableLocked(ctx); err != nil {
-		return 0, err
-	}
-	if r.role != leader {
-		return 0, status.Error(codes.Unavailable, "local repl is not the Raft leader")
-	}
-	if len(r.peers) != 0 {
-		return 0, status.Error(codes.Unimplemented, "multi-node proposals require log replication")
-	}
-	offset, err := r.wal.AppendTerm(r.hard.Term, payload)
-	if err != nil {
-		return 0, r.failLocked(fmt.Errorf("append Raft WAL: %w", err))
-	}
-	return offset, nil
 }

@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -68,7 +70,7 @@ func newRaftTestCluster(t *testing.T, size, live int) *raftTestCluster {
 			t.Fatal(err)
 		}
 		c.nodes[i] = node
-		c.servers[i] = grpc.NewServer()
+		c.servers[i] = grpc.NewServer(grpc.MaxRecvMsgSize(maxRaftMessageSize))
 		raftv1.RegisterRaftServiceServer(c.servers[i], node)
 	}
 	t.Cleanup(func() {
@@ -228,19 +230,85 @@ func TestRaftSingleNodeProposalsUseElectedTerm(t *testing.T) {
 	}
 }
 
-func TestRaftMultiNodeProposalsWaitForLogReplication(t *testing.T) {
+func TestRaftMultiNodeProposalsCommitOnMajority(t *testing.T) {
 	c := newRaftTestCluster(t, 3, 3)
 	id, _ := c.waitLeader(t, 1)
 	for i, r := range c.nodes {
-		want := codes.Unavailable
 		if i == id {
-			want = codes.Unimplemented
+			continue
 		}
-		if _, err := r.appendProposal(context.Background(), []byte("unreplicated")); status.Code(err) != want {
+		if _, err := r.appendProposal(context.Background(), []byte("not the leader")); status.Code(err) != codes.Unavailable {
 			t.Fatalf("node %d proposal: %v", i, err)
 		}
 		if r.wal.LastOffset() != 0 {
 			t.Fatalf("node %d wrote an unreplicated proposal", i)
 		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Exercise the actual AppendEntries wire limit with a maximum-size command.
+	payload := make([]byte, replication.MaxPayloadSize)
+	payload[0], payload[len(payload)-1] = 7, 255
+	offset, err := c.nodes[id].appendProposal(ctx, payload)
+	if err != nil || offset != uint64(len(payload)) {
+		t.Fatalf("leader proposal: %d, %v", offset, err)
+	}
+	for _, r := range c.nodes {
+		waitForCommit(t, r, offset)
+		entry, err := r.wal.ReadEntry(1)
+		if err != nil || !bytes.Equal(entry.Payload, payload) {
+			t.Fatalf("node %s replicated different payload: %v", r.id, err)
+		}
+	}
+}
+
+func TestRaftOfflineFollowersCatchUpAfterQuorumCommit(t *testing.T) {
+	c := newRaftTestCluster(t, 5, 3)
+	id, _ := c.waitLeader(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var offset uint64
+	for _, payload := range []string{"first", "a longer second record"} {
+		var err error
+		offset, err = c.nodes[id].appendProposal(ctx, []byte(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.start(3)
+	c.start(4)
+	for _, r := range c.nodes {
+		waitForCommit(t, r, offset)
+		if index, _ := r.wal.LastEntry(); index != 2 {
+			t.Fatalf("node %s did not catch up: %d records", r.id, index)
+		}
+	}
+}
+
+func TestRaftLosingQuorumCannotCommitAndStopUnblocksProposal(t *testing.T) {
+	c := newRaftTestCluster(t, 3, 3)
+	id, _ := c.waitLeader(t, 1)
+	for i := range c.nodes {
+		if i != id {
+			c.stop(t, i)
+		}
+	}
+	r := c.nodes[id]
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := r.appendProposal(ctx, []byte("pending")); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("no-quorum proposal: %v", err)
+	}
+	if r.status().CommitOffset != 0 || r.wal.LastOffset() != 7 {
+		t.Fatal("proposal was committed or lost without quorum")
+	}
+	done := make(chan error, 1)
+	ctx, stopRequest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRequest()
+	go func() { _, err := r.appendProposal(ctx, []byte("next")); done <- err }()
+	waitForWAL(t, r, 11)
+	c.stop(t, id)
+	if err := <-done; status.Code(err) != codes.Unavailable {
+		t.Fatalf("stopped leader left proposal pending: %v", err)
 	}
 }

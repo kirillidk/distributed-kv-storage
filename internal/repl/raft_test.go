@@ -59,7 +59,7 @@ func testRaft(t *testing.T, terms ...uint64) *raftNode {
 func assertRaftStateOnDisk(t *testing.T, r *raftNode, term uint64, vote string) {
 	t.Helper()
 	got, err := loadRaftState(r.statePath)
-	if err != nil || got != (raftHardState{Term: term, VotedFor: vote}) {
+	if err != nil || got.Term != term || got.VotedFor != vote {
 		t.Fatalf("disk state = %+v, %v; want term=%d vote=%q", got, err, term, vote)
 	}
 }
@@ -158,12 +158,6 @@ func TestAppendEntriesHeartbeatTermsAndConsistency(t *testing.T) {
 		t.Fatalf("higher term heartbeat: %v, %v", response, err)
 	}
 	assertRaftStateOnDisk(t, r, 4, "")
-	_, err = r.AppendEntries(context.Background(), &raftv1.AppendEntriesRequest{
-		Term: 4, LeaderId: "n3", Entries: []*raftv1.LogEntry{{Term: 4, Payload: []byte("not supported")}},
-	})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("nonempty AppendEntries: %v", err)
-	}
 	after, err := os.ReadFile(r.wal.file.Name())
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("heartbeats changed the WAL: %v", err)

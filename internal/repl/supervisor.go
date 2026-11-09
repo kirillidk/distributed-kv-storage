@@ -15,7 +15,6 @@ import (
 
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
-	"github.com/kirillidk/distributed-kv-storage/api/replication"
 	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -67,7 +66,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	}
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(replication.MaxMessageSize))
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxRaftMessageSize))
 	replv1.RegisterReplAdminServiceServer(server, &replAdminServer{logs: logs})
 	var proposals *proposalServer
 	var raft *raftNode
@@ -116,7 +115,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 		var engineReady, leaderReady bool
 		updateReady := func() {
 			state := healthpb.HealthCheckResponse_NOT_SERVING
-			if engineReady && leaderReady && len(peers) == 0 {
+			if engineReady && leaderReady {
 				state = healthpb.HealthCheckResponse_SERVING
 			}
 			healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)

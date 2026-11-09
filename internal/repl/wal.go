@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -37,7 +38,19 @@ type WAL struct {
 	file       *os.File
 	lastOffset uint64
 	end        int64
-	terms      []uint64
+	records    []walRecord
+}
+
+type walRecord struct {
+	term   uint64
+	offset uint64
+	end    int64
+}
+
+type walEntry struct {
+	Term    uint64
+	Offset  uint64
+	Payload []byte
 }
 
 func OpenWAL(path string) (*WAL, error) {
@@ -84,10 +97,10 @@ func (w *WAL) LastOffset() uint64 {
 func (w *WAL) LastEntry() (index, term uint64) {
 	w.metaMu.RLock()
 	defer w.metaMu.RUnlock()
-	if len(w.terms) == 0 {
+	if len(w.records) == 0 {
 		return 0, 0
 	}
-	return uint64(len(w.terms)), w.terms[len(w.terms)-1]
+	return uint64(len(w.records)), w.records[len(w.records)-1].term
 }
 
 func (w *WAL) Matches(index, term uint64) bool {
@@ -96,7 +109,107 @@ func (w *WAL) Matches(index, term uint64) bool {
 	if index == 0 {
 		return term == 0
 	}
-	return index <= uint64(len(w.terms)) && w.terms[index-1] == term
+	return index <= uint64(len(w.records)) && w.records[index-1].term == term
+}
+
+// EntryMeta maps a Raft record index to the engine byte offset and term.
+// Index zero denotes the empty prefix.
+func (w *WAL) EntryMeta(index uint64) (offset, term uint64, err error) {
+	w.metaMu.RLock()
+	defer w.metaMu.RUnlock()
+	if index == 0 {
+		return 0, 0, nil
+	}
+	if index > uint64(len(w.records)) {
+		return 0, 0, ErrOffset
+	}
+	r := w.records[index-1]
+	return r.offset, r.term, nil
+}
+
+func (w *WAL) IndexAtOffset(offset uint64) (uint64, error) {
+	w.metaMu.RLock()
+	defer w.metaMu.RUnlock()
+	if offset == 0 {
+		return 0, nil
+	}
+	i := sort.Search(len(w.records), func(i int) bool { return w.records[i].offset >= offset })
+	if i == len(w.records) || w.records[i].offset != offset {
+		return 0, ErrOffset
+	}
+	return uint64(i + 1), nil
+}
+
+// ReadEntry returns an owned, checksum-validated payload. No WAL lock needs to
+// be held while sending it to a peer or applying it to the engine.
+func (w *WAL) ReadEntry(index uint64) (walEntry, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if index == 0 || index > uint64(len(w.records)) {
+		return walEntry{}, ErrOffset
+	}
+	r := w.records[index-1]
+	var start int64
+	if index > 1 {
+		start = w.records[index-2].end
+	}
+	data := make([]byte, r.end-start)
+	if _, err := w.file.ReadAt(data, start); err != nil {
+		return walEntry{}, err
+	}
+	end := len(data) - walChecksumSize
+	if crc32.ChecksumIEEE(data[:end]) != binary.BigEndian.Uint32(data[end:]) {
+		return walEntry{}, ErrChecksum
+	}
+	headerSize := walHeaderSize
+	sizeAndFlag := binary.BigEndian.Uint32(data)
+	offset := binary.BigEndian.Uint64(data[4:])
+	var term uint64
+	if sizeAndFlag&walTermFlag != 0 {
+		headerSize = walTermHeaderSize
+		if end < headerSize {
+			return walEntry{}, ErrOffset
+		}
+		offset = ^offset
+		term = binary.BigEndian.Uint64(data[12:])
+	}
+	if offset != r.offset || int64(sizeAndFlag&^walTermFlag) != int64(end-headerSize) {
+		return walEntry{}, ErrOffset
+	}
+	if term != r.term {
+		return walEntry{}, ErrTerm
+	}
+	return walEntry{Term: term, Offset: offset, Payload: data[headerSize:end]}, nil
+}
+
+// TruncateAfter durably removes a conflicting suffix. The Raft caller must
+// ensure that index is at or beyond its committed prefix.
+func (w *WAL) TruncateAfter(index uint64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if index > uint64(len(w.records)) {
+		return ErrOffset
+	}
+	if index == uint64(len(w.records)) {
+		return nil
+	}
+	var end int64
+	var offset uint64
+	if index > 0 {
+		end, offset = w.records[index-1].end, w.records[index-1].offset
+	}
+	if err := w.file.Truncate(end); err != nil {
+		return err
+	}
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	w.end = end
+	w.metaMu.Lock()
+	w.records = w.records[:index]
+	w.lastOffset = offset
+	w.metaMu.Unlock()
+	return nil
 }
 
 // Append persists a payload before returning its end offset.
@@ -116,7 +229,7 @@ func (w *WAL) append(term uint64, payload []byte, withTerm bool) (uint64, error)
 	if len(payload) == 0 || uint64(len(payload)) >= uint64(walTermFlag) {
 		return 0, errors.New("WAL payload size must be between 1 and int32 max")
 	}
-	if len(w.terms) > 0 && term < w.terms[len(w.terms)-1] {
+	if len(w.records) > 0 && term < w.records[len(w.records)-1].term {
 		return 0, ErrTerm
 	}
 	if uint64(len(payload)) > math.MaxUint64-w.lastOffset {
@@ -154,7 +267,7 @@ func (w *WAL) append(term uint64, payload []byte, withTerm bool) (uint64, error)
 	w.end = position
 	w.metaMu.Lock()
 	w.lastOffset = offset
-	w.terms = append(w.terms, term)
+	w.records = append(w.records, walRecord{term: term, offset: offset, end: position})
 	w.metaMu.Unlock()
 	return offset, nil
 }
@@ -179,7 +292,7 @@ func (w *WAL) scan(after uint64, apply func(uint64, []byte) error) error {
 	}
 	var position int64
 	var last uint64
-	var terms []uint64
+	var records []walRecord
 	found := after == 0
 	headerBuffer := make([]byte, walTermHeaderSize)
 	var checksum [walChecksumSize]byte
@@ -242,10 +355,10 @@ func (w *WAL) scan(after uint64, apply func(uint64, []byte) error) error {
 		if !validOffset {
 			return fmt.Errorf("%w at byte %d", ErrOffset, position)
 		}
-		if len(terms) > 0 && term < terms[len(terms)-1] {
+		if len(records) > 0 && term < records[len(records)-1].term {
 			return fmt.Errorf("%w at byte %d", ErrTerm, position)
 		}
-		terms = append(terms, term)
+		records = append(records, walRecord{term: term, offset: offset, end: position + length})
 		if offset == after {
 			found = true
 		}
@@ -274,7 +387,7 @@ func (w *WAL) scan(after uint64, apply func(uint64, []byte) error) error {
 	w.end = position
 	w.metaMu.Lock()
 	w.lastOffset = last
-	w.terms = terms
+	w.records = records
 	w.metaMu.Unlock()
 	return nil
 }
