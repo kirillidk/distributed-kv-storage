@@ -10,23 +10,36 @@ import (
 )
 
 type raftHardState struct {
-	Term     uint64
-	VotedFor string
+	Term        uint64
+	VotedFor    string
+	CommitIndex uint64
 }
 
-// The checksum covers the format tag, term, vote length and vote. A corrupt
-// state must never be treated as a fresh node: that could allow a second vote.
+// The checksum covers the format tag, term, vote and commit index. A corrupt
+// state must never be treated as a fresh node: that could allow a second vote
+// or replacement of a committed entry. RFT1 has no known commit boundary.
 func loadRaftState(path string) (raftHardState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return raftHardState{}, err
 	}
-	if len(data) < 20 || string(data[:4]) != "RFT1" ||
-		uint64(binary.BigEndian.Uint32(data[12:])) != uint64(len(data)-20) ||
+	if len(data) < 20 || (string(data[:4]) != "RFT1" && string(data[:4]) != "RFT2") ||
 		binary.BigEndian.Uint32(data[len(data)-4:]) != crc32.ChecksumIEEE(data[:len(data)-4]) {
 		return raftHardState{}, errors.New("invalid Raft state or checksum")
 	}
-	state := raftHardState{Term: binary.BigEndian.Uint64(data[4:]), VotedFor: string(data[16 : len(data)-4])}
+	state := raftHardState{Term: binary.BigEndian.Uint64(data[4:])}
+	voteStart := 16
+	if string(data[:4]) == "RFT2" {
+		if len(data) < 28 {
+			return raftHardState{}, errors.New("incomplete Raft state")
+		}
+		state.CommitIndex = binary.BigEndian.Uint64(data[16:])
+		voteStart = 24
+	}
+	if uint64(binary.BigEndian.Uint32(data[12:])) != uint64(len(data)-voteStart-4) {
+		return raftHardState{}, errors.New("invalid Raft vote length")
+	}
+	state.VotedFor = string(data[voteStart : len(data)-4])
 	if state.Term == 0 && state.VotedFor != "" {
 		return raftHardState{}, errors.New("Raft vote without a term")
 	}
@@ -37,11 +50,12 @@ func loadRaftState(path string) (raftHardState, error) {
 // to an RPC or sending requests in a new term. A failed save is fatal even if
 // rename succeeded, since the durability of the new vote is then uncertain.
 func saveRaftState(path string, state raftHardState) error {
-	data := make([]byte, 20+len(state.VotedFor))
-	copy(data, "RFT1")
+	data := make([]byte, 28+len(state.VotedFor))
+	copy(data, "RFT2")
 	binary.BigEndian.PutUint64(data[4:], state.Term)
 	binary.BigEndian.PutUint32(data[12:], uint32(len(state.VotedFor)))
-	copy(data[16:], state.VotedFor)
+	binary.BigEndian.PutUint64(data[16:], state.CommitIndex)
+	copy(data[24:], state.VotedFor)
 	binary.BigEndian.PutUint32(data[len(data)-4:], crc32.ChecksumIEEE(data[:len(data)-4]))
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".raft-state-*")

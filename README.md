@@ -82,11 +82,13 @@ nodes:
 
 See [the manifest documentation](docs/manifest.md) for the field descriptions.
 
-With `wal_path` on every node, repl elects a Raft leader using majority voting,
-WAL freshness checks, randomized election timeouts and empty AppendEntries
-heartbeats. Term and votedFor survive restarts in `<wal_path>.raft-state`.
-Single-node writes are supported; multi-node log replication is not implemented
-yet, so multi-node proposals return `Unimplemented` on the leader.
+With `wal_path` on every node, repl elects a Raft leader and replicates WAL
+records through AppendEntries, repairing conflicting uncommitted suffixes.
+Writes complete after a durable majority commits an entry in the current term
+and the local engine applies it. Followers apply the committed prefix in the
+background. Term, votedFor and the commit boundary survive restarts in
+`<wal_path>.raft-state`; recovery never applies an uncommitted WAL suffix.
+Send writes to the leader's engine; proposals on other nodes return `Unavailable`.
 
 ## Development
 

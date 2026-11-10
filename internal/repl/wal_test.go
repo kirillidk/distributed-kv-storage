@@ -305,6 +305,60 @@ func TestWALTermRecordsAndLegacyPrefix(t *testing.T) {
 	}
 }
 
+func TestWALTruncateAndReadPreserveRecordBoundariesAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal")
+	w := openTestWAL(t, path)
+	appendTestWAL(t, w, []byte("legacy"))
+	if _, err := w.AppendTerm(1, []byte("discarded suffix")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.TruncateAfter(3); !errors.Is(err, ErrOffset) {
+		t.Fatalf("truncated past the end: %v", err)
+	}
+	if err := w.TruncateAfter(1); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	w = openTestWAL(t, path)
+	if index, term := w.LastEntry(); index != 1 || term != 0 || w.LastOffset() != 6 {
+		t.Fatal("truncation was not durable")
+	}
+	if _, err := w.AppendTerm(2, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []walEntry{{Term: 0, Offset: 6, Payload: []byte("legacy")}, {Term: 2, Offset: 9, Payload: []byte("new")}} {
+		entry, err := w.ReadEntry(uint64(index + 1))
+		if err != nil || entry.Term != want.Term || entry.Offset != want.Offset || !bytes.Equal(entry.Payload, want.Payload) {
+			t.Fatalf("entry %d: %+v, %v", index, entry, err)
+		}
+		gotIndex, err := w.IndexAtOffset(entry.Offset)
+		if err != nil || gotIndex != uint64(index+1) {
+			t.Fatalf("offset %d maps to %d: %v", entry.Offset, gotIndex, err)
+		}
+	}
+	for _, offset := range []uint64{1, 8, 10} {
+		if _, err := w.IndexAtOffset(offset); !errors.Is(err, ErrOffset) {
+			t.Fatalf("accepted offset %d between records: %v", offset, err)
+		}
+	}
+	// Replication reads revalidate checksums instead of silently transmitting
+	// corruption introduced after the log was opened.
+	if _, err := w.file.WriteAt([]byte{255}, walHeaderSize); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ReadEntry(1); !errors.Is(err, ErrChecksum) {
+		t.Fatalf("read corrupted payload: %v", err)
+	}
+	if err := w.TruncateAfter(0); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	w = openTestWAL(t, path)
+	if index, _ := w.LastEntry(); index != 0 || w.LastOffset() != 0 {
+		t.Fatal("empty prefix was not restored")
+	}
+}
+
 func TestWALCorruptFormatBitAndTermNeverTruncate(t *testing.T) {
 	for _, withTerm := range []bool{false, true} {
 		positions := []int{0}

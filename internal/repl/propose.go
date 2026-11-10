@@ -2,6 +2,7 @@ package repl
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -19,12 +20,13 @@ const engineRPCTimeout = time.Second
 // a lock to keep Apply offsets contiguous, including after an uncertain RPC result.
 type proposalServer struct {
 	replv1.UnimplementedReplServiceServer
-	mu       sync.Mutex
-	wal      *WAL
-	raft     *raftNode
-	engine   enginev1.EngineServiceClient
-	ready    bool
-	setReady func(bool)
+	mu            sync.Mutex
+	wal           *WAL
+	raft          *raftNode
+	engine        enginev1.EngineServiceClient
+	ready         bool
+	appliedOffset uint64
+	setReady      func(bool)
 }
 
 func (s *proposalServer) readiness(ready bool) {
@@ -41,7 +43,7 @@ func (s *proposalServer) unavailable() {
 }
 
 func (s *proposalServer) Propose(ctx context.Context, in *replv1.ProposeRequest) (*replv1.ProposeResponse, error) {
-	if len(in.Payload) == 0 {
+	if in == nil || len(in.Payload) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "empty payload")
 	}
 	if len(in.Payload) > replication.MaxPayloadSize {
@@ -68,7 +70,14 @@ func (s *proposalServer) Propose(ctx context.Context, in *replv1.ProposeRequest)
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
-	result, err := s.apply(ctx, offset, in.Payload)
+	var result []byte
+	if s.raft != nil {
+		// Earlier proposals may have committed after their clients canceled.
+		// Apply the entire missing committed prefix before returning this result.
+		result, err = s.applyThrough(ctx, offset)
+	} else {
+		result, err = s.apply(ctx, offset, in.Payload)
+	}
 	if err != nil {
 		s.readiness(false)
 		return nil, err
@@ -83,6 +92,15 @@ func (s *proposalServer) recover(ctx context.Context) error {
 		return status.FromContextError(err).Err()
 	}
 	if s.ready {
+		if s.raft != nil {
+			_, committed := s.raft.committed()
+			if s.appliedOffset < committed {
+				if _, err := s.applyThrough(ctx, committed); err != nil {
+					s.readiness(false)
+					return err
+				}
+			}
+		}
 		return nil
 	}
 	if err := s.engineReady(ctx, false); err != nil {
@@ -94,17 +112,54 @@ func (s *proposalServer) recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.wal.Replay(state.Offset, func(offset uint64, payload []byte) error {
-		_, err := s.apply(ctx, offset, payload)
-		return err
-	}); err != nil {
-		return err
+	if s.raft != nil {
+		_, committed := s.raft.committed()
+		s.appliedOffset = state.Offset
+		if _, err := s.applyThrough(ctx, committed); err != nil {
+			return err
+		}
+	} else {
+		if err := s.wal.Replay(state.Offset, func(offset uint64, payload []byte) error {
+			_, err := s.apply(ctx, offset, payload)
+			return err
+		}); err != nil {
+			return err
+		}
 	}
 	if err := s.engineReady(ctx, true); err != nil {
 		return err
 	}
 	s.readiness(true)
 	return nil
+}
+
+// Called under s.mu, with through no greater than the durable commitOffset.
+// WAL reads finish before each engine RPC so a slow Apply cannot block Raft.
+func (s *proposalServer) applyThrough(ctx context.Context, through uint64) ([]byte, error) {
+	if s.appliedOffset > through {
+		return nil, fmt.Errorf("engine offset %d exceeds committed offset %d", s.appliedOffset, through)
+	}
+	first, err := s.wal.IndexAtOffset(s.appliedOffset)
+	if err != nil {
+		return nil, err
+	}
+	last, err := s.wal.IndexAtOffset(through)
+	if err != nil {
+		return nil, err
+	}
+	var result []byte
+	for index := first + 1; index <= last; index++ {
+		entry, err := s.wal.ReadEntry(index)
+		if err != nil {
+			return nil, err
+		}
+		result, err = s.apply(ctx, entry.Offset, entry.Payload)
+		if err != nil {
+			return nil, err
+		}
+		s.appliedOffset = entry.Offset
+	}
+	return result, nil
 }
 
 func (s *proposalServer) apply(ctx context.Context, offset uint64, payload []byte) ([]byte, error) {
@@ -124,12 +179,16 @@ func (s *proposalServer) engineReady(ctx context.Context, ready bool) error {
 	return err
 }
 
-// Runs for the lifetime of one engine process. Ready engines cause no WAL
-// reads or RPCs here. Startup and failed Apply results trigger background replay.
+// Runs for the lifetime of one engine process. Startup and failed Apply results
+// trigger recovery; new commits are applied on leaders and followers alike.
 func (s *proposalServer) recoverEngine(ctx context.Context, logger *slog.Logger) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	previousError := ""
+	var commitReady <-chan struct{}
+	if s.raft != nil {
+		commitReady = s.raft.commitReady
+	}
 	for {
 		err := s.recover(ctx)
 		if ctx.Err() != nil {
@@ -146,6 +205,7 @@ func (s *proposalServer) recoverEngine(ctx context.Context, logger *slog.Logger)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-commitReady:
 		}
 	}
 }
