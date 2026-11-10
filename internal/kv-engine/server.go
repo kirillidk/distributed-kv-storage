@@ -84,11 +84,11 @@ func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse,
 	value, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		if errors.Is(err, ErrKeyNotFound) {
-			s.metrics.getMisses.Inc()
+			s.metrics.getMisses.WithLabelValues("Get").Inc()
 		}
 		return nil, s.ErrorS("Get", convertError(err))
 	}
-	s.metrics.getHits.Inc()
+	s.metrics.getHits.WithLabelValues("Get").Inc()
 	s.metrics.logSuccess("Get")
 	return &kvv1.GetResponse{Value: []byte(value), ExpiresAt: expiresAt}, nil
 }
@@ -102,11 +102,11 @@ func (s *server) GetExpireTime(_ context.Context, in *kvv1.GetExpireTimeRequest)
 	_, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
 		if errors.Is(err, ErrKeyNotFound) {
-			s.metrics.getMisses.Inc()
+			s.metrics.getMisses.WithLabelValues("GetExpireTime").Inc()
 		}
 		return nil, s.ErrorS("GetExpireTime", convertError(err))
 	}
-	s.metrics.getHits.Inc()
+	s.metrics.getHits.WithLabelValues("GetExpireTime").Inc()
 	s.metrics.logSuccess("GetExpireTime")
 	return &kvv1.GetExpireTimeResponse{ExpiresAt: expiresAt}, nil
 }
@@ -321,6 +321,7 @@ func (s *server) SetReady(ctx context.Context, in *enginev1.SetReadyRequest) (*e
 func (s *server) RunServer(port int, metricsAddr string) {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalChan)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -335,6 +336,17 @@ func (s *server) RunServer(port int, metricsAddr string) {
 	log.Printf("gRPC server listening on %s", lis.Addr())
 
 	metricsServer := s.metrics.startMetricsServer(metricsAddr)
+	// Also drain HTTP when the gRPC shutdown deadline forces RunServer to return.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Metrics server graceful shutdown failed: %v", err)
+			if err := metricsServer.Close(); err != nil {
+				log.Printf("Metrics server force close failed: %v", err)
+			}
+		}
+	}()
 
 	serverStopped := make(chan struct{}, 1)
 	go func() {
@@ -353,8 +365,7 @@ func (s *server) RunServer(port int, metricsAddr string) {
 		})
 		defer timer.Stop()
 		grpcServer.GracefulStop() // gracefully stop server after in-flight server streaming rpc finishes
-		metricsServer.Close()
-		log.Println("Server stopped gracefully.")
+		log.Println("gRPC server stopped gracefully.")
 		// Unblock the main function.
 		select {
 		case serverStopped <- struct{}{}:
@@ -383,6 +394,7 @@ func newServer(storage Storage, timeSource TimeSource) *server {
 	s := &server{storage: storage, timeSource: timeSource, ready: true, health: health.NewServer(), metrics: newMetrics()}
 	s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 	s.metrics.setReadiness(true)
+	s.metrics.entriesCount.Set(float64(storage.EntryCount()))
 	return s
 }
 

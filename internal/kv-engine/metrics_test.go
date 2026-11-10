@@ -50,16 +50,6 @@ func gaugeValue(t *testing.T, m *metrics, name string) float64 {
 	return family.GetMetric()[0].GetGauge().GetValue()
 }
 
-func counterValue(t *testing.T, m *metrics, name string) float64 {
-	t.Helper()
-
-	family := gatherMetricFamily(t, m, name)
-	if len(family.GetMetric()) != 1 {
-		t.Fatalf("metric %q has %d samples, want 1", name, len(family.GetMetric()))
-	}
-	return family.GetMetric()[0].GetCounter().GetValue()
-}
-
 func labelsMatch(metric *dto.Metric, labels map[string]string) bool {
 	if len(metric.GetLabel()) != len(labels) {
 		return false
@@ -103,13 +93,6 @@ func assertGauge(t *testing.T, m *metrics, name string, want float64) {
 	}
 }
 
-func assertCounter(t *testing.T, m *metrics, name string, want float64) {
-	t.Helper()
-	if got := counterValue(t, m, name); got != want {
-		t.Fatalf("%s = %v, want %v", name, got, want)
-	}
-}
-
 func assertCounterVec(t *testing.T, m *metrics, name string, labels map[string]string, want float64) {
 	t.Helper()
 	if got := counterVecValue(t, m, name, labels); got != want {
@@ -122,8 +105,8 @@ func TestMetricsExposesAllMetrics(t *testing.T) {
 	m.setReadiness(true)
 	m.appliedOffset.Set(42)
 	m.entriesCount.Set(7)
-	m.getHits.Inc()
-	m.getMisses.Inc()
+	m.getHits.WithLabelValues("Get").Inc()
+	m.getMisses.WithLabelValues("Get").Inc()
 	m.logSuccess("Get")
 	m.logError("Set", codes.InvalidArgument)
 	m.requestTimer("Get").ObserveDuration()
@@ -145,8 +128,8 @@ func TestMetricsExposesAllMetrics(t *testing.T) {
 	assertGauge(t, m, "kvengine_readiness", 1)
 	assertGauge(t, m, "kvengine_applied_offset_bytes", 42)
 	assertGauge(t, m, "kvengine_entries_count", 7)
-	assertCounter(t, m, "kvengine_get_hits_total", 1)
-	assertCounter(t, m, "kvengine_get_misses_total", 1)
+	assertCounterVec(t, m, "kvengine_get_hits_total", map[string]string{"method": "Get"}, 1)
+	assertCounterVec(t, m, "kvengine_get_misses_total", map[string]string{"method": "Get"}, 1)
 	assertCounterVec(t, m, "kvengine_request_count_total", map[string]string{
 		"method": "Get",
 		"status": "OK",
@@ -173,6 +156,23 @@ func TestMetricsReadinessFollowsServerState(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertGauge(t, s.metrics, "kvengine_readiness", 1)
+}
+
+func TestMetricsInitialPhysicalEntryCount(t *testing.T) {
+	storage := CreateMemoryStorage()
+	if err := storage.Set("live", "value", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Set("expired", "value", 1); err != nil {
+		t.Fatal(err)
+	}
+	s := CreateServer(storage)
+	assertGauge(t, s.metrics, "kvengine_entries_count", 2)
+	if _, err := s.Get(context.Background(), &kvv1.GetRequest{Key: []byte("expired")}); err == nil {
+		t.Fatal("expected expired key to be unavailable")
+	}
+	// Expiration hides a key but does not remove its physical storage entry.
+	assertGauge(t, s.metrics, "kvengine_entries_count", 2)
 }
 
 func TestMetricsAppliedOffsetAndEntryCount(t *testing.T) {
@@ -242,55 +242,52 @@ func TestMetricsAppliedOffsetAndEntryCount(t *testing.T) {
 func TestMetricsGetHitsAndMisses(t *testing.T) {
 	ctx := context.Background()
 	s := newServer(CreateMemoryStorage(), SystemTimeSource{})
+	assertLookups := func(method string, hits, misses float64) {
+		t.Helper()
+		labels := map[string]string{"method": method}
+		assertCounterVec(t, s.metrics, "kvengine_get_hits_total", labels, hits)
+		assertCounterVec(t, s.metrics, "kvengine_get_misses_total", labels, misses)
+	}
+	assertLookups("Get", 0, 0)
+	assertLookups("GetExpireTime", 0, 0)
 
 	if _, err := s.Set(ctx, &kvv1.SetRequest{Key: []byte("key"), Value: []byte("value")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Get(ctx, &kvv1.GetRequest{Key: []byte("key")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("key")}); err != nil {
 		t.Fatal(err)
 	}
-	assertCounter(t, s.metrics, "kvengine_get_hits_total", 2)
-	assertCounter(t, s.metrics, "kvengine_get_misses_total", 0)
-
-	if _, err := s.Get(ctx, &kvv1.GetRequest{Key: []byte("missing")}); err == nil {
-		t.Fatal("expected Get of a missing key to fail")
-	}
 	if _, err := s.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte("missing")}); err == nil {
 		t.Fatal("expected GetExpireTime of a missing key to fail")
 	}
-	assertCounter(t, s.metrics, "kvengine_get_hits_total", 2)
-	assertCounter(t, s.metrics, "kvengine_get_misses_total", 2)
+	assertLookups("GetExpireTime", 1, 1)
+	assertLookups("Get", 0, 0)
+
+	if _, err := s.Get(ctx, &kvv1.GetRequest{Key: []byte("key")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, &kvv1.GetRequest{Key: []byte("missing")}); err == nil {
+		t.Fatal("expected Get of a missing key to fail")
+	}
+	assertLookups("Get", 1, 1)
+	assertLookups("GetExpireTime", 1, 1)
 
 	// Invalid requests are neither hits nor misses.
-	if _, err := s.Get(ctx, &kvv1.GetRequest{Key: []byte("")}); err == nil {
+	if _, err := s.Get(ctx, &kvv1.GetRequest{}); err == nil {
 		t.Fatal("expected Get of an empty key to fail")
 	}
-	assertCounter(t, s.metrics, "kvengine_get_hits_total", 2)
-	assertCounter(t, s.metrics, "kvengine_get_misses_total", 2)
-
-	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
-		"method": "Get",
-		"status": "OK",
-	}, 1)
-	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
-		"method": "Get",
-		"status": codes.NotFound.String(),
-	}, 1)
-	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
-		"method": "Get",
-		"status": codes.InvalidArgument.String(),
-	}, 1)
-	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
-		"method": "GetExpireTime",
-		"status": "OK",
-	}, 1)
-	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
-		"method": "GetExpireTime",
-		"status": codes.NotFound.String(),
-	}, 1)
+	if _, err := s.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{}); err == nil {
+		t.Fatal("expected GetExpireTime of an empty key to fail")
+	}
+	for _, method := range []string{"Get", "GetExpireTime"} {
+		assertLookups(method, 1, 1)
+		for _, code := range []codes.Code{codes.OK, codes.NotFound, codes.InvalidArgument} {
+			assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
+				"method": method,
+				"status": code.String(),
+			}, 1)
+		}
+	}
 }
 
 func TestMetricsRequestCountAndDuration(t *testing.T) {
@@ -582,8 +579,11 @@ func TestMetricsConcurrentCollection(t *testing.T) {
 	default:
 	}
 
-	assertCounter(t, s.metrics, "kvengine_get_hits_total", float64(2*workers*iterations))
-	assertCounter(t, s.metrics, "kvengine_get_misses_total", float64(workers*iterations))
+	for _, method := range []string{"Get", "GetExpireTime"} {
+		assertCounterVec(t, s.metrics, "kvengine_get_hits_total", map[string]string{"method": method}, float64(workers*iterations))
+	}
+	assertCounterVec(t, s.metrics, "kvengine_get_misses_total", map[string]string{"method": "Get"}, float64(workers*iterations))
+	assertCounterVec(t, s.metrics, "kvengine_get_misses_total", map[string]string{"method": "GetExpireTime"}, 0)
 	assertGauge(t, s.metrics, "kvengine_entries_count", 0)
 	assertCounterVec(t, s.metrics, "kvengine_request_count_total", map[string]string{
 		"method": "Get",

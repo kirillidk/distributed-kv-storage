@@ -16,8 +16,8 @@ type metrics struct {
 	readiness     prometheus.Gauge
 	appliedOffset prometheus.Gauge
 	entriesCount  prometheus.Gauge
-	getHits       prometheus.Counter
-	getMisses     prometheus.Counter
+	getHits       *prometheus.CounterVec
+	getMisses     *prometheus.CounterVec
 	requestCount  prometheus.CounterVec
 	requestTime   prometheus.HistogramVec
 }
@@ -28,7 +28,7 @@ func newMetrics() *metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		collectors.NewGoCollector(),
 	)
-	return &metrics{
+	m := &metrics{
 		reg: registry,
 		readiness: promauto.With(registry).NewGauge(prometheus.GaugeOpts{
 			Name: "kvengine_readiness",
@@ -40,16 +40,16 @@ func newMetrics() *metrics {
 		}),
 		entriesCount: promauto.With(registry).NewGauge(prometheus.GaugeOpts{
 			Name: "kvengine_entries_count",
-			Help: "Current number of entries in the replication log",
+			Help: "Current number of physical entries in storage",
 		}),
-		getHits: promauto.With(registry).NewCounter(prometheus.CounterOpts{
+		getHits: promauto.With(registry).NewCounterVec(prometheus.CounterOpts{
 			Name: "kvengine_get_hits_total",
-			Help: "Total number of successful Get operations",
-		}),
-		getMisses: promauto.With(registry).NewCounter(prometheus.CounterOpts{
+			Help: "Total number of successful key lookups, labeled by RPC method",
+		}, []string{"method"}),
+		getMisses: promauto.With(registry).NewCounterVec(prometheus.CounterOpts{
 			Name: "kvengine_get_misses_total",
-			Help: "Total number of failed Get operations (key not found or expired)",
-		}),
+			Help: "Total number of missing or expired key lookups, labeled by RPC method",
+		}, []string{"method"}),
 		requestCount: *promauto.With(registry).NewCounterVec(prometheus.CounterOpts{
 			Name: "kvengine_request_count_total",
 			Help: "Total number of requests received by the server, labeled by method and status code",
@@ -60,6 +60,12 @@ func newMetrics() *metrics {
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms to ~16s
 		}, []string{"method"}),
 	}
+	// Publish zero-valued series so hit/miss ratios work before the first miss.
+	for _, method := range []string{"Get", "GetExpireTime"} {
+		m.getHits.WithLabelValues(method)
+		m.getMisses.WithLabelValues(method)
+	}
+	return m
 }
 
 func (m *metrics) startMetricsServer(addr string) *http.Server {
