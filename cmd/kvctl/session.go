@@ -14,15 +14,30 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const helpText = `set <key> <value> <ttl>  set a value
-get <key>                get a value and its expiration time
-help                     show this help
-exit | quit              exit kvctl
+const helpText = `Command                       API (kv.v1.KVService) Result
+set <key> <value> <ttl>       Set                   OK
+get <key>                     Get                   value, expires_at
+add <key> <value> <ttl>       Add                   success: true|false
+replace <key> <value> <ttl>   Replace               success: true|false
+delete <key>                  Delete                success: true|false
+get-expire-time <key>         GetExpireTime         expires_at
+incr <key> <delta>            Incr                  value
+decr <key> <delta>            Decr                  value
+help                          -                     show this help
+exit | quit                   -                     exit kvctl
+
+add creates an absent key; replace and delete require an existing key.
+success is false if the condition is not met. Expired keys count as absent.
+Values may contain spaces; double-quoted values support escapes and "".
 
 TTL:
 0                     store forever
 1..2592000            relative TTL in seconds
 greater than 2592000  Unix timestamp
+expires_at is an absolute Unix timestamp in seconds, or 0 for no expiration.
+
+Delta:
+signed int64; incr adds delta, decr subtracts delta, 0 leaves the value unchanged
 `
 
 type lineReader interface {
@@ -67,9 +82,9 @@ func (e *commandExecutor) execute(line string) (bool, error) {
 	}
 
 	switch fields[0] {
-	case "set":
+	case "set", "add", "replace":
 		if len(fields) < 4 {
-			return false, errors.New("usage: set <key> <value> <ttl>")
+			return false, fmt.Errorf("usage: %s <key> <value> <ttl>", fields[0])
 		}
 		ttlText := fields[len(fields)-1]
 		ttl, err := strconv.ParseUint(ttlText, 10, 64)
@@ -83,15 +98,40 @@ func (e *commandExecutor) execute(line string) (bool, error) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
 		defer cancel()
-		_, err = e.client.Set(ctx, &kvv1.SetRequest{
-			Key:   []byte(fields[1]),
-			Value: []byte(value),
-			Ttl:   ttl,
-		})
-		if err != nil {
-			return false, err
+		switch fields[0] {
+		case "set":
+			_, err = e.client.Set(ctx, &kvv1.SetRequest{
+				Key:   []byte(fields[1]),
+				Value: []byte(value),
+				Ttl:   ttl,
+			})
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintln(e.stdout, "OK")
+
+		case "add":
+			response, err := e.client.Add(ctx, &kvv1.AddRequest{
+				Key:   []byte(fields[1]),
+				Value: []byte(value),
+				Ttl:   ttl,
+			})
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintf(e.stdout, "success: %t\n", response.GetSuccess())
+
+		case "replace":
+			response, err := e.client.Replace(ctx, &kvv1.ReplaceRequest{
+				Key:   []byte(fields[1]),
+				Value: []byte(value),
+				Ttl:   ttl,
+			})
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintf(e.stdout, "success: %t\n", response.GetSuccess())
 		}
-		fmt.Fprintln(e.stdout, "OK")
 
 	case "get":
 		if len(fields) != 2 {
@@ -104,6 +144,56 @@ func (e *commandExecutor) execute(line string) (bool, error) {
 			return false, err
 		}
 		fmt.Fprintf(e.stdout, "value: %q\nexpires_at: %d\n", string(response.GetValue()), response.GetExpiresAt())
+
+	case "delete":
+		if len(fields) != 2 {
+			return false, errors.New("usage: delete <key>")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		defer cancel()
+		response, err := e.client.Delete(ctx, &kvv1.DeleteRequest{Key: []byte(fields[1])})
+		if err != nil {
+			return false, err
+		}
+		fmt.Fprintf(e.stdout, "success: %t\n", response.GetSuccess())
+
+	case "get-expire-time":
+		if len(fields) != 2 {
+			return false, errors.New("usage: get-expire-time <key>")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		defer cancel()
+		response, err := e.client.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: []byte(fields[1])})
+		if err != nil {
+			return false, err
+		}
+		fmt.Fprintf(e.stdout, "expires_at: %d\n", response.GetExpiresAt())
+
+	case "incr", "decr":
+		if len(fields) != 3 {
+			return false, fmt.Errorf("usage: %s <key> <delta>", fields[0])
+		}
+		delta, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return false, fmt.Errorf("invalid delta %q", fields[2])
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+		defer cancel()
+		switch fields[0] {
+		case "incr":
+			response, err := e.client.Incr(ctx, &kvv1.IncrRequest{Key: []byte(fields[1]), Delta: delta})
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintf(e.stdout, "value: %d\n", response.GetValue())
+
+		case "decr":
+			response, err := e.client.Decr(ctx, &kvv1.DecrRequest{Key: []byte(fields[1]), Delta: delta})
+			if err != nil {
+				return false, err
+			}
+			fmt.Fprintf(e.stdout, "value: %d\n", response.GetValue())
+		}
 
 	case "help":
 		if len(fields) != 1 {

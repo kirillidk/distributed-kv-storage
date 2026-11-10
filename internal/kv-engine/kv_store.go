@@ -21,6 +21,7 @@ const (
 type Storage interface {
 	Set(key string, value string, expiresAt uint64) error
 	Get(key string) (string, uint64, error)
+	EntryCount() uint64
 	// Conditional mutations use the time recorded in the command, so replay
 	// does not change its outcome when a key has since expired.
 	Add(key string, value string, expiresAt, now uint64) (bool, error)
@@ -75,6 +76,12 @@ func (m *MemoryStorage) Get(key string) (string, uint64, error) {
 		return "", 0, ErrKeyNotFound
 	}
 	return value.value, value.expiresAt, nil
+}
+
+func (m *MemoryStorage) EntryCount() uint64 {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	return uint64(len(m.values))
 }
 
 func (m *MemoryStorage) Add(key string, value string, expiresAt, now uint64) (bool, error) {

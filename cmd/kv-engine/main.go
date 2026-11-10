@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	port     = flag.Int("port", 50052, "port number")
-	replAddr = flag.String("repl-addr", os.Getenv("REPL_CONNECT_ADDR"), "local repl address for durable proposals")
+	port        = flag.Int("port", 50052, "port number")
+	replAddr    = flag.String("repl-addr", os.Getenv("REPL_CONNECT_ADDR"), "local repl address for durable proposals")
+	metricsAddr = flag.String("metrics-listen", ":2112", "metrics server address")
 )
 
 func main() {
@@ -28,5 +29,5 @@ func main() {
 		proposer = replv1.NewReplServiceClient(conn)
 	}
 	server := kvengine.CreateServerWithProposer(kvengine.CreateMemoryStorage(), proposer)
-	server.RunServer(*port)
+	server.RunServer(*port, *metricsAddr)
 }
