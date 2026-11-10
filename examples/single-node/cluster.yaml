@@ -12,6 +12,7 @@ nodes:
         - /usr/local/bin/kv-engine
         - --port
         - "8001"
-
+        - --metrics-listen
+        - "0.0.0.0:2112"
       restart_delay: 3s
       shutdown_timeout: 5s
