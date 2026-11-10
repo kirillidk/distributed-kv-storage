@@ -58,6 +58,25 @@ value: "distributed-kv"
 expires_at: 0
 ```
 
+Use `help` to list command syntax, the corresponding `kv.v1.KVService` RPC,
+and the result format:
+
+| Command | RPC | Result |
+| --- | --- | --- |
+| `set <key> <value> <ttl>` | `Set` | `OK` |
+| `get <key>` | `Get` | `value`, `expires_at` |
+| `add <key> <value> <ttl>` | `Add` | `success: true\|false` |
+| `replace <key> <value> <ttl>` | `Replace` | `success: true\|false` |
+| `delete <key>` | `Delete` | `success: true\|false` |
+| `get-expire-time <key>` | `GetExpireTime` | `expires_at` |
+| `incr <key> <delta>` | `Incr` | `value` |
+| `decr <key> <delta>` | `Decr` | `value` |
+
+Values can contain spaces; double quotes support escapes and empty values
+(for example, `add empty "" 0`). `delta` is a signed decimal `int64`, including
+zero and negative values. Each RPC uses the `--timeout` setting (default `3s`);
+errors show the gRPC status code and the session remains open.
+
 ## Cluster manifest
 
 The cluster topology and local process settings are described in a shared
