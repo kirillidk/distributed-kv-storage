@@ -66,11 +66,11 @@ func (s *fakeKVServer) Get(ctx context.Context, _ *kvv1.GetRequest) (*kvv1.GetRe
 	return response, nil
 }
 
-func newFakeKVClient(t *testing.T, server *fakeKVServer) kvv1.KVServiceClient {
+func newFakeKVClient(t *testing.T, server *fakeKVServer, options ...grpc.ServerOption) kvv1.KVServiceClient {
 	t.Helper()
 
 	listener := bufconn.Listen(1024 * 1024)
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(options...)
 	kvv1.RegisterKVServiceServer(grpcServer, server)
 	go func() {
 		_ = grpcServer.Serve(listener)

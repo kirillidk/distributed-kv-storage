@@ -156,6 +156,20 @@ set name distributed-kv 0
 get name
 ```
 
+## Additional KV commands
+
+```text
+add counter 10 0
+incr counter 5
+decr counter -2
+get-expire-time counter
+replace counter 20 60
+delete counter
+```
+
+Run `help` to see all commands, their arguments, and the corresponding
+`kv.v1.KVService` RPCs.
+
 ## Stop
 
 ```bash
