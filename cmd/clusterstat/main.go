@@ -24,6 +24,10 @@ func main() {
 	log.Printf("monitoring %d component(s), poll=%s timeout=%s",
 		len(cfg.Components), cfg.PollInterval, cfg.CheckTimeout)
 
+	if cfg.PrometheusURL != "" {
+		log.Printf("prometheus url=%s", cfg.PrometheusURL)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -36,7 +40,7 @@ func main() {
 		col.Run(ctx)
 	}()
 
-	srv := server.New(cfg.Listen, col, cfg.Components, cfg.CheckTimeout)
+	srv := server.New(cfg.Listen, col, cfg.Components, cfg.CheckTimeout, cfg.PrometheusURL)
 
 	errCh := make(chan error, 1)
 	go func() {

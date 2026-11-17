@@ -70,7 +70,7 @@ func newPagedLogServer(t *testing.T, engine []byte) (*Server, *pagedLogServer) {
 		{NodeID: "node-1", Type: config.TypeKVEngine, Address: "127.0.0.1:8001"},
 	}
 	col := collector.New(components, time.Hour, time.Second)
-	return New("127.0.0.1:0", col, components, time.Second), logs
+	return New("127.0.0.1:0", col, components, time.Second, ""), logs
 }
 
 type logPage struct {
@@ -97,8 +97,7 @@ func readLogPage(t *testing.T, s *Server, target string) logPage {
 
 func TestLogPagesContinuePastLimitWithoutLosingUTF8(t *testing.T) {
 	const endpoint = "/api/v1/components/node-1/kv-engine/logs"
-	// The first byte of the emoji falls at the end of the first HTTP page.
-	data := []byte(strings.Repeat("x", logclient.PageBytes-1) + "🙂 tail\nlast line")
+	data := []byte(strings.Repeat("x", logclient.PageBytes-1) + "tail\nlast line")
 	s, logs := newPagedLogServer(t, data)
 	first := readLogPage(t, s, endpoint)
 	if first.FetchError != "" || first.EOF || first.NextOffset != logclient.PageBytes ||

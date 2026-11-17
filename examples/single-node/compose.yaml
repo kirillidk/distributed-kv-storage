@@ -17,6 +17,23 @@ services:
     ports:
       - "7001:7001"
       - "8001:8001"
+      - "2112:2112"
+    stop_grace_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    depends_on:
+      - node-1
     stop_grace_period: 10s
 
   clusterstat:
@@ -30,14 +47,18 @@ services:
       - /etc/distributed-kv/cluster.yaml
       - --listen
       - 0.0.0.0:8080
+      - --prometheus-url
+      - http://prometheus:9090
     volumes:
       - ./cluster.yaml:/etc/distributed-kv/cluster.yaml:ro
     ports:
       - "8080:8080"
     depends_on:
       - node-1
+      - prometheus
     stop_grace_period: 10s
 
 volumes:
   node-logs:
   node-1-wal:
+  prometheus-data:
