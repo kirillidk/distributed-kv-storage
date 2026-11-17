@@ -15,7 +15,7 @@ import (
 
 func TestHealthz(t *testing.T) {
 	col := collector.New(nil, time.Second, time.Second)
-	s := New("127.0.0.1:0", col, nil, time.Second)
+	s := New("127.0.0.1:0", col, nil, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestAPIComponents(t *testing.T) {
 		{NodeID: "node-1", Type: config.TypeKVEngine, Address: "127.0.0.1:8001"},
 	}
 	col := collector.New(comps, time.Hour, time.Second)
-	s := New("127.0.0.1:0", col, comps, time.Second)
+	s := New("127.0.0.1:0", col, comps, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/components", nil)
 	rr := httptest.NewRecorder()
@@ -72,7 +72,7 @@ func TestAPIComponents(t *testing.T) {
 
 func TestHTTPShutdown(t *testing.T) {
 	col := collector.New(nil, time.Second, time.Second)
-	s := New("127.0.0.1:0", col, nil, time.Second)
+	s := New("127.0.0.1:0", col, nil, time.Second, "")
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -99,7 +99,7 @@ func TestHTTPShutdown(t *testing.T) {
 
 func TestComponentLogsNotFound(t *testing.T) {
 	col := collector.New(nil, time.Second, time.Second)
-	s := New("127.0.0.1:0", col, nil, time.Second)
+	s := New("127.0.0.1:0", col, nil, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/components/nope/kv-engine/logs", nil)
 	rr := httptest.NewRecorder()
@@ -115,7 +115,7 @@ func TestComponentLogsFetchError(t *testing.T) {
 		{NodeID: "node-1", Type: config.TypeKVEngine, Address: "127.0.0.1:8001"},
 	}
 	col := collector.New(comps, time.Hour, time.Second)
-	s := New("127.0.0.1:0", col, comps, time.Second)
+	s := New("127.0.0.1:0", col, comps, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/components/node-1/kv-engine/logs", nil)
 	rr := httptest.NewRecorder()
@@ -154,7 +154,7 @@ func TestLogsPageOK(t *testing.T) {
 		{NodeID: "node-1", Type: config.TypeRepl, Address: "127.0.0.1:9001"},
 	}
 	col := collector.New(comps, time.Hour, time.Second)
-	s := New("127.0.0.1:0", col, comps, time.Second)
+	s := New("127.0.0.1:0", col, comps, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/components/node-1/repl/logs", nil)
 	rr := httptest.NewRecorder()
@@ -173,7 +173,7 @@ func TestLogsPageOK(t *testing.T) {
 
 func TestLogsPageNotFound(t *testing.T) {
 	col := collector.New(nil, time.Second, time.Second)
-	s := New("127.0.0.1:0", col, nil, time.Second)
+	s := New("127.0.0.1:0", col, nil, time.Second, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/components/nope/repl/logs", nil)
 	rr := httptest.NewRecorder()
