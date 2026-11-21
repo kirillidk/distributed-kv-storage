@@ -1,114 +1,92 @@
 # Cluster manifest
 
-`cluster.yaml` describes the static cluster topology and the processes running
-on each node. The manifest is shared by components, but each component uses
-only the fields it needs.
+All nodes and `clusterstat` read the same version 1 YAML file. `cluster_id`
+names the cluster, `nodes` lists its repl endpoints, and `shards` lists the
+replicas of each logical dataset. Start one repl process per node ID.
 
-## Example
-
-```yaml
-nodes:
-  - id: node-1
-    repl:
-      listen_addr: 0.0.0.0:7001
-      connect_addr: node-1:7001
-      log_dir: /var/log/distributed-kv/node-1
-      wal_path: /var/lib/repl/node-1.wal
-
-    engine:
-      connect_addr: node-1:8001
-      command:
-        - /usr/local/bin/kv-engine
-        - --port
-        - "8001"
-      restart_delay: 3s
-      shutdown_timeout: 5s
+```sh
+repl --manifest cluster.yaml --node-id node-1
 ```
 
-## Fields
+The two-node example runs both shard-a and shard-b on node-1. Node-2 runs the
+second replica of shard-a. Each node exposes a single repl gRPC address.
+[Local example](../examples/two-shards/cluster.yaml) · [Single-node Docker example](../examples/single-node/cluster.yaml)
 
-### `shard_count` and `nodes[].shard_id`
+## Manifest fields
 
-`shard_count` defaults to 1 and `shard_id` defaults to 0. Every ID from 0
-through `shard_count - 1` must have at least one node. Each node hosts one
-shard. Its replication peers are exactly the other nodes with the same shard ID.
-In a sharded deployment, each multi-node shard needs a WAL on every replica.
-A single-node shard can also run in memory.
+| Field | Meaning |
+| --- | --- |
+| `version` | Required integer, currently `1`. |
+| `cluster_id` | Required cluster identifier carried by replication RPCs and stored with the WAL. |
+| `nodes[].id` | Unique node ID selected by `--node-id`. |
+| `nodes[].repl.listen_addr` | Local gRPC bind address for Raft, proposals, health and logs. |
+| `nodes[].repl.connect_addr` | Advertised address used by engines, peer nodes and clusterstat. |
+| `nodes[].repl.log_dir` | Optional directory for JSON Lines diagnostic logs. |
+| `shards[].id` | Unique logical shard name. |
+| `shards[].replicas[].node_id` | Existing node that supervises this replica. Each node may occur once per shard. |
+| `shards[].replicas[].data_dir` | Persistent local directory for this replica, created on startup. |
+| `shards[].replicas[].engine.connect_addr` | Unique engine address for KV requests, health and Apply. |
+| `shards[].replicas[].engine.command` | Executable and its arguments. Set distinct listen and metrics ports for engines on the same host. |
+| `shards[].replicas[].engine.restart_delay` | Delay before restarting this engine after exit, such as `1s`. |
+| `shards[].replicas[].engine.shutdown_timeout` | Time allowed for this engine to exit after SIGTERM before it is killed. |
 
-The owner is the unsigned IEEE CRC32 of the key's raw bytes modulo `shard_count`.
-Node ordering, addresses and leader elections have no effect on the result.
-The supervisor passes `KV_SHARD_ID` and `KV_SHARD_COUNT` to the engine.
-All KV operations check ownership. A misdirected request returns gRPC
-`FailedPrecondition` with the owner and local shard IDs.
+Each shard must have at least one replica. A node may host any number of
+different shards, including zero. Local replicas need distinct data directories.
+Separate hosts can use the same path. Relative paths resolve against the
+working directory of the supervising repl.
 
-The layout is static. A durable node records its shard ID, shard count and hash
-algorithm in `<wal_path>.shard`. Keep it alongside the WAL and Raft state.
-An existing single-shard WAL can be reopened with the default layout. To change
-the number of shards or repartition existing data, migrate the keys into fresh
-shard WALs before switching clients to the new manifest.
+## Key placement and request routing
 
-### `nodes[].id`
+Sort the shard IDs in bytewise ascending order. The unsigned IEEE CRC32 of the
+raw key modulo the number of shards selects its zero-based index in that list.
+Clients connect directly to an engine of that shard. Writes require its elected
+leader. Reads use the selected engine's applied state.
 
-Unique node identifier. A local `repl` selects its configuration using
-`--node-id`.
+For each local replica, repl starts a separate supervisor, engine connection,
+WAL, Raft state machine and recovery loop. Every engine receives its
+`KV_CLUSTER_ID`, named `KV_SHARD_ID`, numeric `KV_SHARD_INDEX`,
+`KV_SHARD_COUNT` and local `REPL_CONNECT_ADDR`. The engine encodes each mutation
+and sends its cluster and shard IDs with `Propose`. Raft peers send the same
+pair in `RequestVote` and `AppendEntries`. The node selects the addressed local
+replica before accessing its state. Missing IDs return `InvalidArgument`, a
+foreign cluster returns `FailedPrecondition`, and an unhosted shard returns
+`NotFound`. Replication payloads are opaque and limited to 4 MiB.
 
-### `nodes[].repl.listen_addr`
+## Data and recovery
 
-Address on which the local `repl` binds its gRPC server.
+Each `data_dir` contains `wal` (records), `wal.raft-state` (term, vote and
+commit boundary), and `wal.shard` (cluster, node, shard and hash assignment).
+Keep all three together on persistent storage. Each engine restart replays its
+own committed prefix through `GetOffset` and `Apply`, then enables KV requests
+through `SetReady`. During replay that engine returns `Unavailable`. Sibling
+replicas continue to serve and retain their offsets.
 
-### `nodes[].repl.connect_addr`
+To upgrade a previous node-based manifest, stop the old cluster and keep a
+backup of its files. Declare each old engine as a replica with the same node ID
+and voter set. Choose shard names whose sorted indexes match the old numeric
+IDs. For each replica, copy its old `wal_path`, `<wal_path>.raft-state` and
+`<wal_path>.shard` into its new `data_dir` under the names above. On first
+startup repl upgrades a matching numeric binding to the named identity. Logs
+from before the introduction of sharding can be adopted by a single-shard
+cluster. To retain engine diagnostic history, rename the old `kv-engine.log`
+to the corresponding per-shard log filename. Deploy the new repl and engine
+binaries together. Changing key placement requires migrating the affected data.
 
-Address other cluster components use to connect to this `repl`.
+## Health and logs
 
-### `nodes[].repl.log_dir`
+The default repl health service reports node availability.
+`repl.v1.ReplService/<shard-id>` reports SERVING only for a ready local leader.
+`repl.raft.v1.RaftService/<shard-id>` reports the local Raft group's availability.
+A node with exactly one local replica also publishes the unqualified service names.
+Each engine has its own default health endpoint.
 
-Optional directory for `repl.log` (supervisor events) and `kv-engine.log`
-(engine stdout/stderr). Files use JSON Lines and are appended to across
-restarts. Relative paths use the `repl` working directory.
+With `log_dir` configured, `repl.log` contains node and supervisor events and
+`kv-engine.<escaped-shard-id>.log` contains stdout/stderr for one engine.
+The filenames use URL path escaping for the shard ID. The logs append across
+restarts. Use `ReadLogs.shard_id` or the clusterstat engine log URL parameter
+`?shard_id=shard-a` to select the replica. [ReplAdminService](../api/proto/repl/v1/admin.proto)
 
-Omit the field for console-only logging. Files are available through
-[`ReplAdminService.ReadLogs`](../api/proto/repl/v1/admin.proto).
-
-### `nodes[].repl.wal_path`
-
-Optional path to the local binary write-ahead log. When set, `repl` exposes
-`repl.v1.ReplService.Propose` on its listen address. Clients send Set/Get to
-kv-engine; it encodes writing events and proposes their bytes to repl. The
-elected leader persists each payload with fsync and waits for durable replication
-on a strict majority before calling back into `EngineService.Apply`.
-Repl does not expose KV methods or decode engine events.
-
-The supervisor sets `REPL_CONNECT_ADDR` to `repl.connect_addr` in the engine
-process environment. kv-engine uses it by default; `--repl-addr HOST:PORT`
-overrides it. Without `wal_path`, repl serves health and supervises an in-memory
-engine.
-
-At every engine start, repl replays the missing committed log prefix using
-`GetOffset` and `Apply`. An uncommitted suffix remains in the WAL without being
-applied. During recovery, engine Set/Get and repl Propose return Unavailable.
-The engine and the named `repl.v1.ReplService` Health service report NOT_SERVING;
-the default repl Health service stays SERVING while its supervisor runs.
-Repl calls `EngineService.SetReady` to enable client requests after replay finishes.
-Every engine RPC made by repl has
-a one-second timeout; the whole log has no fixed time limit. Replay runs in the background,
-independently of client requests.
-
-Payloads are limited to 4 MiB. The internal gRPC limit also reserves space for
-the protobuf fields, including the offset. Oversized payloads are rejected
-before they reach the WAL.
-
-The parent directory must already exist. Relative paths are resolved against
-the `repl` working directory. Each file must be owned by one `repl` process.
-Keep the file on persistent storage to recover across process restarts.
-On opening the WAL, repl syncs the file and its parent directory before
-accepting writes, so creating the log also persists its directory entry.
-
-### Raft elections and replication
-
-When `wal_path` is configured, every node in the shard is a voter and
-must have its own WAL. The supervisor connects to its shard peers' `repl.connect_addr`
-addresses and serves [`RaftService`](../internal/repl/proto/repl/raft/v1/raft.proto) alongside
-health and logs, independently of engine recovery. Membership is static.
+## Raft elections and replication
 
 Each election needs a strict majority of the shard's configured nodes, including those
 currently offline. RequestVote compares the last record's term first, then its
@@ -119,11 +97,13 @@ up followers; idle heartbeats run every 100ms. Peer RPCs have a 200ms deadline.
 A higher term in a request or response demotes the node.
 
 Term, votedFor and the committed record index are stored in
-`<wal_path>.raft-state` with a checksum, atomic replacement, file fsync and
+`<data_dir>/wal.raft-state` with a checksum, atomic replacement, file fsync and
 directory fsync before votes are acknowledged, election requests are sent or
-new committed commands reach Apply. Keep this file with the WAL across restarts. Corrupt
-state or persistence failures stop the node. WAL records now include their term;
-legacy records are still readable with term zero and retain their engine offsets.
+new committed commands reach Apply. Keep this file with the WAL across restarts.
+Corrupt state prevents startup. A runtime Raft persistence failure stops the
+affected replica. Other replicas continue serving. If every local replica fails,
+repl exits with an error. WAL records include their term. Legacy records remain
+readable with term zero and retain their engine offsets.
 
 Each follower checks the preceding record's index and term, durably truncates
 only a conflicting uncommitted suffix, and fsyncs incoming records before
@@ -138,34 +118,17 @@ entries in the prefix. Previous-term entries alone cannot advance commit;
 an uncommitted inherited suffix waits for a new current-term proposal.
 AppendEntries carries the committed record index. Followers cap it at the last
 record matched by that request, then translate it to the engine's byte
-`commitOffset`. Apply runs in order on every node without holding Raft or WAL
+`commitOffset`. Apply runs in order on every replica without holding Raft or WAL
 locks during engine RPCs. Failed Apply calls are retried through GetOffset and
 recovery, without replaying uncommitted entries.
 
 Propose returns the opaque engine result only after commit and Apply. A canceled
 request can still commit later; cancellation does not remove its WAL entry.
-Losing leadership or stopping the node releases pending proposals with
+Losing leadership or stopping the replica releases pending proposals with
 `Unavailable`. Without quorum, proposals wait until their context expires or
 leadership changes. Followers and candidates return `Unavailable` for proposals.
-The named `repl.v1.ReplService` health status becomes SERVING after both election
-and engine recovery, in single-node and multi-node deployments.
-`repl.raft.v1.RaftService` stays available independently of engine recovery.
 Role, term and leader ID changes appear in the repl diagnostic log.
 
 The previous RFT1 state format is readable, but contains no commit boundary.
 Its WAL entries remain unapplied until Raft establishes their commit through a
 leader's AppendEntries or a current-term quorum commit.
-
-### `nodes[].engine.connect_addr`
-
-Address clients, `repl`, and `clusterstat` use to connect to the engine.
-
-### `nodes[].engine.command`
-
-Executable and arguments used by `repl` to start the engine.
-
-### Engine process settings
-
-- `restart_delay` is the delay before restarting an exited engine.
-- `shutdown_timeout` is how long `repl` waits after `SIGTERM` before killing
-  the engine.

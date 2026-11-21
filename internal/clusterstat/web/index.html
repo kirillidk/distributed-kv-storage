@@ -119,7 +119,7 @@
           const na = a.node_id || '';
           const nb = b.node_id || '';
           if (na !== nb) return na.localeCompare(nb);
-          return (a.type || '').localeCompare(b.type || '');
+          return (a.type || '').localeCompare(b.type || '') || (a.shard_id || '').localeCompare(b.shard_id || '');
         });
 
         for (const c of list) {
@@ -142,7 +142,8 @@
           typeLink.href = '/components/' +
             encodeURIComponent(c.node_id || '') + '/' +
             encodeURIComponent(c.type || '') + '/logs';
-          typeLink.textContent = c.type || '';
+          if (c.shard_id) typeLink.href += '?shard_id=' + encodeURIComponent(c.shard_id);
+          typeLink.textContent = [c.type, c.shard_id].filter(Boolean).join(' / ');
           typeLink.className = 'comp-link';
           typeTd.appendChild(typeLink);
           tr.appendChild(typeTd);

@@ -16,6 +16,8 @@ message RequestVoteRequest {
   // Raft indexes count records, independently of engine byte offsets.
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  string cluster_id = 5;
+  string shard_id = 6;
 }
 
 message RequestVoteResponse {
@@ -37,6 +39,8 @@ message AppendEntriesRequest {
   repeated LogEntry entries = 5;
   // Committed Raft record index, not an engine byte offset.
   uint64 leader_commit = 6;
+  string cluster_id = 7;
+  string shard_id = 8;
 }
 
 message AppendEntriesResponse {

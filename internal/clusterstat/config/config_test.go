@@ -27,7 +27,7 @@ func TestLoadManifest(t *testing.T) {
 	}
 	want := []Component{
 		{NodeID: "node-1", Type: TypeRepl, Address: "node-1:7001"},
-		{NodeID: "node-1", Type: TypeKVEngine, Address: "node-1:8001"},
+		{NodeID: "node-1", ShardID: "shard-a", Type: TypeKVEngine, Address: "node-1:8001"},
 	}
 	for i := range want {
 		if cfg.Components[i] != want[i] {
@@ -54,7 +54,7 @@ func TestLoadErrors(t *testing.T) {
 		{name: "invalid poll interval", args: []string{"--poll-interval", "0s"}, want: "poll-interval must be positive"},
 		{name: "unexpected argument", args: []string{"extra"}, want: "unexpected arguments"},
 		{name: "unknown manifest field", args: []string{"--manifest", writeManifest(t, "nodes: []\nunknown: true\n")}, want: "field unknown not found"},
-		{name: "empty nodes", args: []string{"--manifest", writeManifest(t, "nodes: []\n")}, want: "manifest contains no nodes"},
+		{name: "empty nodes", args: []string{"--manifest", writeManifest(t, "version: 1\ncluster_id: test\nnodes: []\n")}, want: "manifest contains no nodes"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestLoadShardedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Components) != 4 || cfg.Components[0].NodeID != "node-a" || cfg.Components[2].NodeID != "node-b" {
+	if len(cfg.Components) != 5 || cfg.Components[2].NodeID != "node-1" || cfg.Components[2].ShardID != "shard-a" || cfg.Components[4].NodeID != "node-1" || cfg.Components[4].ShardID != "shard-b" {
 		t.Fatalf("unexpected shard components: %+v", cfg.Components)
 	}
 }

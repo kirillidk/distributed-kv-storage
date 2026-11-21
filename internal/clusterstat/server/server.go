@@ -67,7 +67,7 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveLogsPage(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("node_id")
 	typ := config.ComponentType(r.PathValue("type"))
-	if _, ok := s.collector.Lookup(nodeID, typ); !ok {
+	if _, ok := s.collector.Lookup(nodeID, typ, r.URL.Query().Get("shard_id")); !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -85,6 +85,7 @@ func (s *Server) handleComponents(w http.ResponseWriter, r *http.Request) {
 
 	type item struct {
 		NodeID    string     `json:"node_id"`
+		ShardID   string     `json:"shard_id,omitempty"`
 		Type      string     `json:"type"`
 		Address   string     `json:"address"`
 		Status    string     `json:"status"`
@@ -103,6 +104,7 @@ func (s *Server) handleComponents(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.Components = append(resp.Components, item{
 			NodeID:    st.NodeID,
+			ShardID:   st.ShardID,
 			Type:      string(st.Type),
 			Address:   st.Address,
 			Status:    string(st.Status),
@@ -122,7 +124,7 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 	nodeID := r.PathValue("node_id")
 	typ := config.ComponentType(r.PathValue("type"))
 
-	st, ok := s.collector.Lookup(nodeID, typ)
+	st, ok := s.collector.Lookup(nodeID, typ, r.URL.Query().Get("shard_id"))
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -141,10 +143,11 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	result, err := s.logs.ReadPage(r.Context(), nodeID, typ, offset, logclient.PageBytes)
+	result, err := s.logs.ReadPage(r.Context(), nodeID, typ, st.ShardID, offset, logclient.PageBytes)
 
 	type respBody struct {
 		NodeID     string `json:"node_id"`
+		ShardID    string `json:"shard_id,omitempty"`
 		Type       string `json:"type"`
 		Address    string `json:"address"`
 		Status     string `json:"status"`
@@ -160,6 +163,7 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 	}
 	out := respBody{
 		NodeID:     st.NodeID,
+		ShardID:    st.ShardID,
 		Type:       string(st.Type),
 		Address:    st.Address,
 		Status:     string(st.Status),

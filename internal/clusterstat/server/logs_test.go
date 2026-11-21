@@ -25,7 +25,7 @@ import (
 type pagedLogServer struct {
 	replv1.UnimplementedReplAdminServiceServer
 	mu       sync.Mutex
-	engine   []byte
+	engines  map[string][]byte
 	failNext bool
 	calls    int
 }
@@ -41,9 +41,13 @@ func (s *pagedLogServer) ReadLogs(ctx context.Context, in *replv1.ReadLogsReques
 		s.failNext = false
 		return nil, status.Error(codes.Unavailable, "temporary failure")
 	}
-	data := s.engine
-	if in.Component == replv1.LogComponent_LOG_COMPONENT_REPL {
-		data = []byte("repl line\n")
+	data := []byte("repl line\n")
+	if in.Component == replv1.LogComponent_LOG_COMPONENT_KV_ENGINE {
+		var ok bool
+		data, ok = s.engines[in.ShardId]
+		if !ok {
+			return nil, status.Error(codes.NotFound, "unknown engine")
+		}
 	}
 	if in.Offset > uint64(len(data)) {
 		return nil, status.Error(codes.OutOfRange, "offset exceeds file size")
@@ -54,26 +58,29 @@ func (s *pagedLogServer) ReadLogs(ctx context.Context, in *replv1.ReadLogsReques
 	return &replv1.ReadLogsResponse{Data: bytes.Clone(data[in.Offset:end]), NextOffset: end, Eof: end == uint64(len(data))}, nil
 }
 
-func newPagedLogServer(t *testing.T, engine []byte) (*Server, *pagedLogServer) {
+func newPagedLogServer(t *testing.T, engines map[string][]byte) (*Server, *pagedLogServer) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	grpcServer := grpc.NewServer()
-	logs := &pagedLogServer{engine: bytes.Clone(engine)}
+	logs := &pagedLogServer{engines: engines}
 	replv1.RegisterReplAdminServiceServer(grpcServer, logs)
 	go grpcServer.Serve(listener)
 	t.Cleanup(func() { grpcServer.Stop(); listener.Close() })
 	components := []config.Component{
 		{NodeID: "node-1", Type: config.TypeRepl, Address: listener.Addr().String()},
-		{NodeID: "node-1", Type: config.TypeKVEngine, Address: "127.0.0.1:8001"},
+	}
+	for id := range engines {
+		components = append(components, config.Component{NodeID: "node-1", Type: config.TypeKVEngine, ShardID: id})
 	}
 	col := collector.New(components, time.Hour, time.Second)
 	return New("127.0.0.1:0", col, components, time.Second), logs
 }
 
 type logPage struct {
+	ShardID    string   `json:"shard_id"`
 	Data       []byte   `json:"data"`
 	Lines      []string `json:"lines"`
 	NextOffset uint64   `json:"next_offset"`
@@ -99,7 +106,7 @@ func TestLogPagesContinuePastLimitWithoutLosingUTF8(t *testing.T) {
 	const endpoint = "/api/v1/components/node-1/kv-engine/logs"
 	// The first byte of the emoji falls at the end of the first HTTP page.
 	data := []byte(strings.Repeat("x", logclient.PageBytes-1) + "🙂 tail\nlast line")
-	s, logs := newPagedLogServer(t, data)
+	s, logs := newPagedLogServer(t, map[string][]byte{"shard-a": data})
 	first := readLogPage(t, s, endpoint)
 	if first.FetchError != "" || first.EOF || first.NextOffset != logclient.PageBytes ||
 		!bytes.Equal(first.Data, data[:logclient.PageBytes]) {
@@ -126,7 +133,7 @@ func TestLogPagesContinuePastLimitWithoutLosingUTF8(t *testing.T) {
 		t.Fatal("EOF page changed the cursor")
 	}
 	logs.mu.Lock()
-	logs.engine = append(logs.engine, []byte(" completed\nnew line\n")...)
+	logs.engines["shard-a"] = append(logs.engines["shard-a"], []byte(" completed\nnew line\n")...)
 	logs.mu.Unlock()
 	appended := readLogPage(t, s, eofURL)
 	if appended.FetchError != "" || !appended.EOF || string(appended.Data) != " completed\nnew line\n" {
@@ -139,7 +146,7 @@ func TestLogPagesContinuePastLimitWithoutLosingUTF8(t *testing.T) {
 }
 
 func TestLogPagesValidateOffset(t *testing.T) {
-	s, logs := newPagedLogServer(t, []byte("line\n"))
+	s, logs := newPagedLogServer(t, map[string][]byte{"shard-a": []byte("line\n")})
 	for _, query := range []string{"offset=", "offset=-1", "offset=abc", "offset=18446744073709551616", "offset=1&offset=2"} {
 		t.Run(query, func(t *testing.T) {
 			rr := httptest.NewRecorder()
@@ -159,5 +166,24 @@ func TestLogPagesValidateOffset(t *testing.T) {
 	page := readLogPage(t, s, "/api/v1/components/node-1/kv-engine/logs?offset=18446744073709551615")
 	if page.FetchError == "" || page.NextOffset != ^uint64(0) {
 		t.Fatal("large offset was lost or truncated")
+	}
+}
+
+func TestComponentLogsSelectLocalReplica(t *testing.T) {
+	const endpoint = "/api/v1/components/node-1/kv-engine/logs"
+	engines := map[string][]byte{"shard-a": []byte("first engine"), "shard-b": []byte("second engine")}
+	s, _ := newPagedLogServer(t, engines)
+	for id, data := range engines {
+		page := readLogPage(t, s, endpoint+"?shard_id="+id)
+		if page.ShardID != id || !bytes.Equal(page.Data, data) || page.FetchError != "" {
+			t.Fatalf("log page for %s: %+v", id, page)
+		}
+	}
+	for _, query := range []string{"", "?shard_id=missing"} {
+		rr := httptest.NewRecorder()
+		s.httpServer.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, endpoint+query, nil))
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status for %q = %d", query, rr.Code)
+		}
 	}
 }

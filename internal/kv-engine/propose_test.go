@@ -8,6 +8,7 @@ import (
 	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/api/sharding"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
@@ -25,7 +26,7 @@ func TestForeignKeyRejectedBeforeProposeOrApply(t *testing.T) {
 		t.Fatal("foreign key reached Propose")
 		return nil
 	}}
-	s, err := CreateShardServer(store, proposer, 0, 2)
+	s, err := CreateShardServer(store, proposer, sharding.Assignment{ClusterID: "demo", ShardID: "a", Count: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -135,6 +135,7 @@ func (r *raftNode) appendRequestLocked(id string) (*raftv1.AppendEntriesRequest,
 		return nil, err
 	}
 	request := &raftv1.AppendEntriesRequest{
+		ClusterId: r.clusterID, ShardId: r.shardID,
 		Term: r.hard.Term, LeaderId: r.id, PrevLogIndex: prev, PrevLogTerm: term,
 		LeaderCommit: r.hard.CommitIndex,
 	}

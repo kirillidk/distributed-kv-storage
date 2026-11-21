@@ -77,7 +77,9 @@ type ReadLogsRequest struct {
 	// This is independent of replication log offsets.
 	Offset uint64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
 	// Maximum bytes to return. Zero defaults to 64 KiB; the maximum is 1 MiB.
-	MaxBytes      uint32 `protobuf:"varint,3,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	MaxBytes uint32 `protobuf:"varint,3,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	// Selects an engine on this node. Optional for a node with one engine.
+	ShardId       string `protobuf:"bytes,4,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -131,6 +133,13 @@ func (x *ReadLogsRequest) GetMaxBytes() uint32 {
 		return x.MaxBytes
 	}
 	return 0
+}
+
+func (x *ReadLogsRequest) GetShardId() string {
+	if x != nil {
+		return x.ShardId
+	}
+	return ""
 }
 
 type ReadLogsResponse struct {
@@ -202,11 +211,12 @@ var File_repl_v1_admin_proto protoreflect.FileDescriptor
 
 const file_repl_v1_admin_proto_rawDesc = "" +
 	"\n" +
-	"\x13repl/v1/admin.proto\x12\arepl.v1\"{\n" +
+	"\x13repl/v1/admin.proto\x12\arepl.v1\"\x96\x01\n" +
 	"\x0fReadLogsRequest\x123\n" +
 	"\tcomponent\x18\x01 \x01(\x0e2\x15.repl.v1.LogComponentR\tcomponent\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x04R\x06offset\x12\x1b\n" +
-	"\tmax_bytes\x18\x03 \x01(\rR\bmaxBytes\"Y\n" +
+	"\tmax_bytes\x18\x03 \x01(\rR\bmaxBytes\x12\x19\n" +
+	"\bshard_id\x18\x04 \x01(\tR\ashardId\"Y\n" +
 	"\x10ReadLogsResponse\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1f\n" +
 	"\vnext_offset\x18\x02 \x01(\x04R\n" +

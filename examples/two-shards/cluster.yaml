@@ -1,24 +1,39 @@
-shard_count: 2
+version: 1
+cluster_id: demo
+
 nodes:
-  - id: node-a
-    shard_id: 0
+  - id: node-1
     repl:
       listen_addr: 127.0.0.1:7001
       connect_addr: 127.0.0.1:7001
-      wal_path: node-a.wal
-    engine:
-      connect_addr: 127.0.0.1:8001
-      command: [kv-engine, --port, "8001", --metrics-listen, "127.0.0.1:2112"]
-      restart_delay: 1s
-      shutdown_timeout: 5s
-  - id: node-b
-    shard_id: 1
+  - id: node-2
     repl:
       listen_addr: 127.0.0.1:7002
       connect_addr: 127.0.0.1:7002
-      wal_path: node-b.wal
-    engine:
-      connect_addr: 127.0.0.1:8002
-      command: [kv-engine, --port, "8002", --metrics-listen, "127.0.0.1:2113"]
-      restart_delay: 1s
-      shutdown_timeout: 5s
+
+shards:
+  - id: shard-a
+    replicas:
+      - node_id: node-1
+        data_dir: data/node-1/shard-a
+        engine:
+          connect_addr: 127.0.0.1:8001
+          command: [kv-engine, --port, "8001", --metrics-listen, "127.0.0.1:2111"]
+          restart_delay: 1s
+          shutdown_timeout: 5s
+      - node_id: node-2
+        data_dir: data/node-2/shard-a
+        engine:
+          connect_addr: 127.0.0.1:8011
+          command: [kv-engine, --port, "8011", --metrics-listen, "127.0.0.1:2121"]
+          restart_delay: 1s
+          shutdown_timeout: 5s
+  - id: shard-b
+    replicas:
+      - node_id: node-1
+        data_dir: data/node-1/shard-b
+        engine:
+          connect_addr: 127.0.0.1:8002
+          command: [kv-engine, --port, "8002", --metrics-listen, "127.0.0.1:2112"]
+          restart_delay: 1s
+          shutdown_timeout: 5s

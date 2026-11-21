@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/kirillidk/distributed-kv-storage/internal/manifest"
 	"github.com/kirillidk/distributed-kv-storage/internal/repl"
 )
 
@@ -36,14 +37,14 @@ func run(args []string, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	manifest, err := repl.LoadManifest(*manifestPath)
+	topology, err := manifest.Load(*manifestPath)
 	if err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	if err := repl.Run(ctx, manifest, *nodeID, logger); err != nil {
+	if err := repl.Run(ctx, topology, *nodeID, logger); err != nil {
 		return fmt.Errorf("supervise node %q: %w", *nodeID, err)
 	}
 	return nil

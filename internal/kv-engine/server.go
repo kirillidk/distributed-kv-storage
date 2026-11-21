@@ -29,8 +29,7 @@ type server struct {
 	kvv1.UnimplementedKVServiceServer
 	enginev1.UnimplementedEngineServiceServer
 	storage       Storage
-	shardID       uint32
-	shardCount    uint32
+	shard         sharding.Assignment
 	timeSource    TimeSource
 	appliedOffset uint64
 	appliedResult []byte
@@ -186,8 +185,8 @@ func (s *server) checkRequestKey(key []byte) *status.Status {
 }
 
 func (s *server) checkShard(key []byte) *status.Status {
-	if owner := sharding.ForKey(key, s.shardCount); owner != s.shardID {
-		return status.Newf(codes.FailedPrecondition, "key belongs to shard %d, local shard is %d", owner, s.shardID)
+	if owner := sharding.ForKey(key, s.shard.Count); owner != s.shard.Index {
+		return status.Newf(codes.FailedPrecondition, "key belongs to shard index %d, local shard %q has index %d", owner, s.shard.ShardID, s.shard.Index)
 	}
 	return nil
 }
@@ -206,7 +205,11 @@ func (s *server) mutate(ctx context.Context, cmd mutation) (mutationResult, *sta
 	var result mutationResult
 	if s.proposer != nil {
 		// Apply calls back into this server: never hold its lock during Propose.
-		resp, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{Payload: payload})
+		resp, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{
+			ClusterId: s.shard.ClusterID,
+			ShardId:   s.shard.ShardID,
+			Payload:   payload,
+		})
 		if err != nil {
 			return result, status.Convert(err)
 		}
@@ -405,7 +408,7 @@ func expiresAtFromTTL(ttl, now uint64) (uint64, error) {
 }
 
 func newServer(storage Storage, timeSource TimeSource) *server {
-	s := &server{storage: storage, shardCount: 1, timeSource: timeSource, ready: true, health: health.NewServer(), metrics: newMetrics()}
+	s := &server{storage: storage, shard: sharding.Assignment{Count: 1}, timeSource: timeSource, ready: true, health: health.NewServer(), metrics: newMetrics()}
 	s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 	s.metrics.setReadiness(true)
 	s.metrics.entriesCount.Set(float64(storage.EntryCount()))
@@ -427,11 +430,14 @@ func CreateServerWithProposer(storage Storage, proposer replv1.ReplServiceClient
 	return s
 }
 
-func CreateShardServer(storage Storage, proposer replv1.ReplServiceClient, shardID, shardCount uint32) (*server, error) {
-	if shardCount == 0 || shardID >= shardCount {
-		return nil, fmt.Errorf("shard ID %d is outside [0, %d)", shardID, shardCount)
+func CreateShardServer(storage Storage, proposer replv1.ReplServiceClient, shard sharding.Assignment) (*server, error) {
+	if proposer != nil && (shard.ClusterID == "" || shard.ShardID == "") {
+		return nil, errors.New("KV_CLUSTER_ID and KV_SHARD_ID are required for replication")
+	}
+	if shard.Count == 0 || shard.Index >= shard.Count {
+		return nil, fmt.Errorf("shard index %d is outside [0, %d)", shard.Index, shard.Count)
 	}
 	s := CreateServerWithProposer(storage, proposer)
-	s.shardID, s.shardCount = shardID, shardCount
+	s.shard = shard
 	return s, nil
 }

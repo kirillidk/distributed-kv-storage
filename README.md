@@ -77,61 +77,36 @@ Values can contain spaces; double quotes support escapes and empty values
 zero and negative values. Each RPC uses the `--timeout` setting (default `3s`);
 errors show the gRPC status code and the session remains open.
 
-## Cluster manifest
+## Cluster manifest and sharding
 
-The cluster topology and local process settings are described in a shared
-YAML manifest:
+The version 1 manifest lists each `repl` process in `nodes` and each logical
+Raft group in `shards`. Each replica assigns one engine and a private
+`data_dir` to a node. Starting a node starts all of its assigned engines.
+[Manifest fields and upgrade instructions](docs/manifest.md)
 
-```yaml
-nodes:
-  - id: node-1
-    repl:
-      listen_addr: 0.0.0.0:7001
-      connect_addr: node-1:7001
+The local example places the replicas as follows. [Two-shard manifest](examples/two-shards/cluster.yaml)
 
-    engine:
-      connect_addr: node-1:8001
-      command:
-        - /usr/local/bin/kv-engine
-        - --port
-        - "8001"
-      restart_delay: 3s
-      shutdown_timeout: 5s
-```
+| Shard | node-1 engine | node-2 engine | Votes needed to commit |
+| --- | --- | --- | --- |
+| shard-a | 127.0.0.1:8001 | 127.0.0.1:8011 | 2 |
+| shard-b | 127.0.0.1:8002 | | 1 |
 
-See [the manifest documentation](docs/manifest.md) for the field descriptions.
-
-With `wal_path` on every node of a shard, repl elects a leader for that shard
-and replicates WAL records through AppendEntries, repairing conflicting
-uncommitted suffixes.
-Writes complete after a durable majority commits an entry in the current term
-and the local engine applies it. Followers apply the committed prefix in the
-background. Term, votedFor and the commit boundary survive restarts in
-`<wal_path>.raft-state`; recovery never applies an uncommitted WAL suffix.
-Send writes to the shard leader's engine. Followers reject proposals with `Unavailable`.
-
-## Sharding
-
-Set `shard_count` in the manifest and assign each node a zero-based `shard_id`.
-Replicas with the same `shard_id` share a Raft log and quorum. Manifests that omit both
-fields place every node in shard 0.
-
-Clients select the shard with `CRC32-IEEE(key bytes) % shard_count`. Send a write
-to that shard's leader or read from one of its ready engines. An engine returns
-`FailedPrecondition` for a key owned by another shard. Changing the shard count
-of an existing dataset requires migration. [Go key placement function](api/sharding/sharding.go)
-
-The local example has one node per shard. With the binaries on your `PATH`,
-start each node in a separate terminal from the repository root.
+With `repl`, `kv-engine` and `kvctl` on your `PATH`, run one command per
+terminal from the repository root.
 
 ```sh
-repl --manifest examples/two-shards/cluster.yaml --node-id node-a
-repl --manifest examples/two-shards/cluster.yaml --node-id node-b
+repl --manifest examples/two-shards/cluster.yaml --node-id node-1
+repl --manifest examples/two-shards/cluster.yaml --node-id node-2
 ```
 
-Connect `kvctl --address 127.0.0.1:8001` to set or get `alpha` (shard 0).
-Use `127.0.0.1:8002` for `beta` (shard 1). Each node writes its WAL in the
-working directory. [Two-shard manifest](examples/two-shards/cluster.yaml)
+Connect `kvctl --address 127.0.0.1:8002` and run `set beta hello 0` followed
+by `get beta`. This also works when only node-1 is running. The key `alpha`
+belongs to shard-a. Send its writes to the elected leader's engine and read
+from either ready replica. Followers apply committed entries in the background.
+
+A key selects index `CRC32-IEEE(key bytes) % len(shards)` in the lexicographically
+sorted shard IDs. Reordering the manifest preserves placement. Each engine
+rejects keys outside its shard with `FailedPrecondition`. [Go key placement function](api/sharding/sharding.go)
 
 ## Development
 

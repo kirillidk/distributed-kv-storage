@@ -68,6 +68,7 @@
     const parts = location.pathname.split('/').filter(Boolean);
     const nodeId = decodeURIComponent(parts[1] || '');
     const type = decodeURIComponent(parts[2] || '');
+    const shard = new URLSearchParams(location.search).get('shard_id') || '';
     const tbody = document.getElementById('rows');
     const button = document.getElementById('load-more');
     const progress = document.getElementById('progress');
@@ -112,14 +113,14 @@
       try {
         const res = await fetch(
           '/api/v1/components/' + encodeURIComponent(nodeId) + '/' +
-          encodeURIComponent(type) + '/logs?offset=' + offset
+          encodeURIComponent(type) + '/logs?' + new URLSearchParams({offset, shard_id: shard})
         );
         if (res.status === 404) throw new Error('Component not found');
         if (!res.ok) throw new Error(res.statusText);
         const data = await res.json();
 
         document.getElementById('title').textContent =
-          (data.node_id || '-') + ' · ' + (data.type || '');
+          [data.node_id, data.type, data.shard_id].filter(Boolean).join(' · ');
         document.getElementById('meta').innerHTML =
           'address: ' + esc(data.address || '-') +
           ' · status: <span class="badge ' + esc(data.status || 'UNKNOWN') + '">' +

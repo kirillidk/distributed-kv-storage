@@ -67,10 +67,29 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walPath := filepath.Join(dir, "node.wal")
+	dataDir := filepath.Join(dir, "data")
+	walPath := filepath.Join(dataDir, "wal")
 	logDir := filepath.Join(dir, "component-logs")
 	manifestPath := filepath.Join(dir, "cluster.yaml")
-	manifest := fmt.Sprintf("nodes:\n  - id: smoke\n    repl:\n      listen_addr: %s\n      connect_addr: %s\n      wal_path: %s\n      log_dir: %s\n    engine:\n      connect_addr: %s\n      command: [%s, --port, '%s']\n      restart_delay: 100ms\n      shutdown_timeout: 2s\n", replAddr, replAddr, walPath, logDir, engineAddr, filepath.Join(dir, "kv-engine"), port)
+	manifest := fmt.Sprintf(`version: 1
+cluster_id: smoke
+nodes:
+  - id: smoke
+    repl:
+      listen_addr: %s
+      connect_addr: %s
+      log_dir: %s
+shards:
+  - id: main
+    replicas:
+      - node_id: smoke
+        data_dir: %s
+        engine:
+          connect_addr: %s
+          command: [%s, --port, "%s", --metrics-listen, "127.0.0.1:0"]
+          restart_delay: 100ms
+          shutdown_timeout: 2s
+`, replAddr, replAddr, logDir, dataDir, engineAddr, filepath.Join(dir, "kv-engine"), port)
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +135,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		}
 		t.Fatal(message)
 	}
-	pidPattern := regexp.MustCompile(`msg="engine started" pid=([0-9]+)`)
+	pidPattern := regexp.MustCompile(`msg="engine started"[^\n]*?\bpid=([0-9]+)`)
 	enginePID := func(logPath string, count int) int {
 		var pid int
 		poll("engine was not started", func() bool {

@@ -211,7 +211,7 @@ func TestLogsRecordStatusChanges(t *testing.T) {
 
 	waitFor(t, col, upAddr, collector.StatusUP)
 
-	logs, st, ok := col.Logs("node-1", config.TypeKVEngine)
+	logs, st, ok := col.Logs("node-1", config.TypeKVEngine, "")
 	if !ok {
 		t.Fatal("component not found")
 	}

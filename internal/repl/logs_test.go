@@ -16,6 +16,7 @@ import (
 	"time"
 
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/internal/manifest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -45,7 +46,7 @@ func newLogsClient(t *testing.T, logs *componentLogs) replv1.ReplAdminServiceCli
 
 func TestReadLogsPaginationReopenAndTail(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "logs")
-	logs, err := openComponentLogs(dir)
+	logs, err := openComponentLogs(dir, []string{"main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestReadLogsPaginationReopenAndTail(t *testing.T) {
 	}
 	// Small byte pages deliberately split JSON records and multibyte characters.
 	want := []byte("{\"line\":\"привет\",\"stream\":\"stderr\"}\n{\"line\":\"next\"}\n")
-	if _, err := logs.engine.Write(want); err != nil {
+	if _, err := logs.engines["main"].Write(want); err != nil {
 		t.Fatal(err)
 	}
 	var got []byte
@@ -89,12 +90,12 @@ func TestReadLogsPaginationReopenAndTail(t *testing.T) {
 	if err := logs.Close(); err != nil {
 		t.Fatal(err)
 	}
-	logs, err = openComponentLogs(dir)
+	logs, err = openComponentLogs(dir, []string{"main"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	client = newLogsClient(t, logs)
-	if _, err := logs.engine.Write([]byte("tail\n")); err != nil {
+	if _, err := logs.engines["main"].Write([]byte("tail\n")); err != nil {
 		t.Fatal(err)
 	}
 	page, err := client.ReadLogs(ctx, request)
@@ -110,7 +111,7 @@ func TestReadLogsPaginationReopenAndTail(t *testing.T) {
 }
 
 func TestReadLogsLimitsAndErrors(t *testing.T) {
-	logs, err := openComponentLogs(t.TempDir())
+	logs, err := openComponentLogs(t.TempDir(), []string{"main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,7 @@ func TestReadLogsLimitsAndErrors(t *testing.T) {
 }
 
 func TestComponentLogsConcurrentWritesAndReads(t *testing.T) {
-	logs, err := openComponentLogs(t.TempDir())
+	logs, err := openComponentLogs(t.TempDir(), []string{"main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,16 +234,16 @@ complete:
 }
 
 func TestComponentLogWriteFailureIsReported(t *testing.T) {
-	logs, err := openComponentLogs(t.TempDir())
+	logs, err := openComponentLogs(t.TempDir(), []string{"main"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer logs.Close()
-	logs.engine.file.Close()
-	slog.New(slog.NewJSONHandler(logs.engine, nil)).Info("engine output")
+	logs.engines["main"].file.Close()
+	slog.New(slog.NewJSONHandler(logs.engines["main"], nil)).Info("engine output")
 	select {
 	case err := <-logs.errors:
-		if !strings.Contains(err.Error(), "kv-engine.log") {
+		if !strings.Contains(err.Error(), "kv-engine.main.log") {
 			t.Fatal(err)
 		}
 	default:
@@ -259,8 +260,8 @@ func TestRunLogDirectoryFailureDoesNotStartEngine(t *testing.T) {
 	t.Setenv("REPL_TEST_ENGINE", "1")
 	starts := filepath.Join(dir, "starts")
 	t.Setenv("REPL_TEST_STARTS", starts)
-	node := testNode("wait")
-	node.Repl.LogDir = path
+	node := testNode(t, "wait")
+	node.Nodes[0].Repl.LogDir = path
 	if err := runTestNode(context.Background(), node, testLogger(), nil); err == nil || !strings.Contains(err.Error(), "log directory") {
 		t.Fatalf("expected log directory failure, got %v", err)
 	}
@@ -298,9 +299,9 @@ func TestRunPersistsAndServesLogsAcrossRestarts(t *testing.T) {
 	t.Setenv("REPL_TEST_ENGINE", "1")
 	starts := filepath.Join(t.TempDir(), "starts")
 	t.Setenv("REPL_TEST_STARTS", starts)
-	node := testNode("exit-zero")
-	node.Repl.LogDir = t.TempDir()
-	node.Engine.ShutdownTimeout = Duration{3 * time.Second}
+	node := testNode(t, "exit-zero")
+	node.Nodes[0].Repl.LogDir = t.TempDir()
+	node.Shards[0].Replicas[0].Engine.ShutdownTimeout.Duration = 3 * time.Second
 	client, stop := startLogNode(t, node)
 	defer stop()
 	waitForStarts(t, starts, 2)
@@ -321,12 +322,12 @@ func TestRunPersistsAndServesLogsAcrossRestarts(t *testing.T) {
 		}
 	}
 	stop()
-	enginePath := filepath.Join(node.Repl.LogDir, "kv-engine.log")
+	enginePath := filepath.Join(node.Nodes[0].Repl.LogDir, "kv-engine.main.log")
 	engineData, err := os.ReadFile(enginePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replPath := filepath.Join(node.Repl.LogDir, "repl.log")
+	replPath := filepath.Join(node.Nodes[0].Repl.LogDir, "repl.log")
 	replData, err := os.ReadFile(replPath)
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +362,7 @@ func TestRunPersistsAndServesLogsAcrossRestarts(t *testing.T) {
 	}
 }
 
-func startLogNode(t *testing.T, node NodeConfig) (replv1.ReplAdminServiceClient, func()) {
+func startLogNode(t *testing.T, node *manifest.Manifest) (replv1.ReplAdminServiceClient, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
