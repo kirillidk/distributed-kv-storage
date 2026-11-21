@@ -76,6 +76,29 @@ func OpenWAL(path string) (*WAL, error) {
 	return w, nil
 }
 
+// Bind the log to its keyspace before starting Raft. A WAL written before
+// sharding was introduced belongs to the original, single-shard layout.
+func (w *WAL) bindShard(id, count ShardNumber) error {
+	path := w.file.Name() + ".shard"
+	want := fmt.Sprintf("crc32-ieee %d %d\n", id, count)
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if string(data) != want {
+			return fmt.Errorf("WAL shard assignment in %s differs from shard %d of %d (data migration required)", path, id, count)
+		}
+		return nil
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("read WAL shard assignment: %w", err)
+	case count != 1 && w.LastOffset() != 0:
+		return errors.New("existing single-shard WAL requires data migration before enabling sharding")
+	}
+	if err := writeStateFile(path, []byte(want)); err != nil {
+		return fmt.Errorf("persist WAL shard assignment: %w", err)
+	}
+	return nil
+}
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {

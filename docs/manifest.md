@@ -27,6 +27,26 @@ nodes:
 
 ## Fields
 
+### `shard_count` and `nodes[].shard_id`
+
+`shard_count` defaults to 1 and `shard_id` defaults to 0. Every ID from 0
+through `shard_count - 1` must have at least one node. Each node hosts one
+shard. Its replication peers are exactly the other nodes with the same shard ID.
+In a sharded deployment, each multi-node shard needs a WAL on every replica.
+A single-node shard can also run in memory.
+
+The owner is the unsigned IEEE CRC32 of the key's raw bytes modulo `shard_count`.
+Node ordering, addresses and leader elections have no effect on the result.
+The supervisor passes `KV_SHARD_ID` and `KV_SHARD_COUNT` to the engine.
+All KV operations check ownership. A misdirected request returns gRPC
+`FailedPrecondition` with the owner and local shard IDs.
+
+The layout is static. A durable node records its shard ID, shard count and hash
+algorithm in `<wal_path>.shard`. Keep it alongside the WAL and Raft state.
+An existing single-shard WAL can be reopened with the default layout. To change
+the number of shards or repartition existing data, migrate the keys into fresh
+shard WALs before switching clients to the new manifest.
+
 ### `nodes[].id`
 
 Unique node identifier. A local `repl` selects its configuration using
@@ -85,12 +105,12 @@ accepting writes, so creating the log also persists its directory entry.
 
 ### Raft elections and replication
 
-When `wal_path` is configured, every node in the shared manifest is a voter and
-must have its own WAL. The supervisor connects to all other `repl.connect_addr`
+When `wal_path` is configured, every node in the shard is a voter and
+must have its own WAL. The supervisor connects to its shard peers' `repl.connect_addr`
 addresses and serves [`RaftService`](../internal/repl/proto/repl/raft/v1/raft.proto) alongside
 health and logs, independently of engine recovery. Membership is static.
 
-Each election needs a strict majority of all configured nodes, including those
+Each election needs a strict majority of the shard's configured nodes, including those
 currently offline. RequestVote compares the last record's term first, then its
 Raft index (record count, separate from the engine's byte offset). The election
 timeout is sampled independently from `[500ms, 1s)` on every reset. Leaders send
@@ -138,7 +158,7 @@ leader's AppendEntries or a current-term quorum commit.
 
 ### `nodes[].engine.connect_addr`
 
-Address `repl`, `rpc-proxy`, and `clusterstat` use to connect to the engine.
+Address clients, `repl`, and `clusterstat` use to connect to the engine.
 
 ### `nodes[].engine.command`
 

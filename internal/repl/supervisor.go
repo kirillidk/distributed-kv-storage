@@ -22,16 +22,19 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run serves node health, logs and Raft, and supervises the local engine until
-// ctx is canceled. cluster must include all voters, including the local node.
-// Omitting cluster starts a single-node deployment.
-func Run(ctx context.Context, node NodeConfig, logger *slog.Logger, cluster ...NodeConfig) error {
-	return runOnListener(ctx, node, logger, nil, cluster...)
+// Run supervises one node from a validated manifest. Only members of its shard
+// participate in its elections and receive its Raft log.
+func Run(ctx context.Context, manifest *Manifest, nodeID string, logger *slog.Logger) error {
+	return runOnListener(ctx, manifest, nodeID, logger, nil)
 }
 
-func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener, cluster ...NodeConfig) (runErr error) {
+func runOnListener(ctx context.Context, manifest *Manifest, nodeID string, logger *slog.Logger, listener net.Listener) (runErr error) {
 	if listener != nil {
 		defer listener.Close()
+	}
+	node, err := manifest.FindNode(nodeID)
+	if err != nil {
+		return err
 	}
 	var logs *componentLogs
 	var logErrors <-chan error
@@ -47,7 +50,7 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 		engineLogger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.engine, nil)})
 		logger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.repl, nil)})
 	}
-	logger.Info("repl starting", "node_id", node.ID, "listen_addr", node.Repl.ListenAddr,
+	logger.Info("repl starting", "node_id", node.ID, "shard_id", node.ShardID, "listen_addr", node.Repl.ListenAddr,
 		"connect_addr", node.Repl.ConnectAddr, "engine_connect_addr", node.Engine.ConnectAddr)
 	defer func() {
 		if runErr != nil {
@@ -76,22 +79,17 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 			return err
 		}
 		defer wal.Close()
+		if err := wal.bindShard(node.ShardID, manifest.ShardCount); err != nil {
+			return err
+		}
 		conn, err := grpc.NewClient(node.Engine.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return fmt.Errorf("create engine client: %w", err)
 		}
 		defer conn.Close()
-		if len(cluster) == 0 {
-			cluster = []NodeConfig{node}
-		}
-		peers := make(map[string]raftv1.RaftServiceClient, len(cluster)-1)
-		seen := make(map[string]bool, len(cluster))
-		for _, peer := range cluster {
-			if peer.ID == "" || seen[peer.ID] || peer.Repl.WALPath == "" {
-				return errors.New("Raft requires unique node IDs and a WAL on every node")
-			}
-			seen[peer.ID] = true
-			if peer.ID == node.ID {
+		peers := make(map[string]raftv1.RaftServiceClient)
+		for _, peer := range manifest.Nodes {
+			if peer.ShardID != node.ShardID || peer.ID == node.ID {
 				continue
 			}
 			peerConn, err := grpc.NewClient(peer.Repl.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -100,9 +98,6 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 			}
 			defer peerConn.Close()
 			peers[peer.ID] = raftv1.NewRaftServiceClient(peerConn)
-		}
-		if !seen[node.ID] {
-			return errors.New("local Raft node is missing from the cluster")
 		}
 		raft, err = newRaftNode(node.ID, peers, wal, node.Repl.WALPath+".raft-state", defaultRaftTiming, logger)
 		if err != nil {
@@ -150,7 +145,9 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 
 	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 	supervisorDone := make(chan error, 1)
-	go func() { supervisorDone <- supervise(supervisorCtx, node, logger, engineLogger, proposals) }()
+	go func() {
+		supervisorDone <- supervise(supervisorCtx, *node, manifest.ShardCount, logger, engineLogger, proposals)
+	}()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	logger.Info("repl health serving", "address", listener.Addr().String())
 
@@ -207,15 +204,19 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	return runErr
 }
 
-func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.Logger, proposals *proposalServer) error {
+func supervise(ctx context.Context, node NodeConfig, shardCount ShardNumber, logger, engineLogger *slog.Logger, proposals *proposalServer) error {
 	engine := node.Engine
 	for ctx.Err() == nil {
 		if proposals != nil {
 			proposals.unavailable()
 		}
 		cmd := exec.Command(engine.Command[0], engine.Command[1:]...)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("KV_SHARD_ID=%d", node.ShardID), fmt.Sprintf("KV_SHARD_COUNT=%d", shardCount))
 		if proposals != nil {
-			cmd.Env = append(os.Environ(), "REPL_CONNECT_ADDR="+node.Repl.ConnectAddr)
+			cmd.Env = append(cmd.Env, "REPL_CONNECT_ADDR="+node.Repl.ConnectAddr)
+		} else if shardCount > 1 {
+			// A memory-only shard applies locally even if the parent has a repl address.
+			cmd.Env = append(cmd.Env, "REPL_CONNECT_ADDR=")
 		}
 		stdout := &engineLogWriter{logger: engineLogger, stream: "stdout"}
 		stderr := &engineLogWriter{logger: engineLogger, stream: "stderr"}

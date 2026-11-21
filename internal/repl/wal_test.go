@@ -31,6 +31,36 @@ func appendTestWAL(t *testing.T, w *WAL, payload []byte) uint64 {
 	return offset
 }
 
+func TestWALShardAssignmentSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal")
+	w := openTestWAL(t, path)
+	if err := w.bindShard(1, 2); err != nil {
+		t.Fatal(err)
+	}
+	appendTestWAL(t, w, []byte("data"))
+	w.Close()
+	w = openTestWAL(t, path)
+	for _, layout := range [][2]ShardNumber{{0, 2}, {1, 3}, {0, 1}} {
+		if err := w.bindShard(layout[0], layout[1]); err == nil {
+			t.Fatalf("accepted changed placement %v", layout)
+		}
+	}
+	if err := w.bindShard(1, 2); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyWALBelongsToSingleShard(t *testing.T) {
+	w := openTestWAL(t, filepath.Join(t.TempDir(), "legacy"))
+	appendTestWAL(t, w, []byte("data"))
+	if err := w.bindShard(0, 2); err == nil {
+		t.Fatal("accepted a nonempty legacy WAL in a partitioned cluster")
+	}
+	if err := w.bindShard(0, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWALFormatAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wal")
 	w := openTestWAL(t, path)

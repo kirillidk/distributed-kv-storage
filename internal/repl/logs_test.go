@@ -261,7 +261,7 @@ func TestRunLogDirectoryFailureDoesNotStartEngine(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	node := testNode("wait")
 	node.Repl.LogDir = path
-	if err := Run(context.Background(), node, testLogger()); err == nil || !strings.Contains(err.Error(), "log directory") {
+	if err := runTestNode(context.Background(), node, testLogger(), nil); err == nil || !strings.Contains(err.Error(), "log directory") {
 		t.Fatalf("expected log directory failure, got %v", err)
 	}
 	if _, err := os.Stat(starts); !os.IsNotExist(err) {
@@ -369,7 +369,7 @@ func startLogNode(t *testing.T, node NodeConfig) (replv1.ReplAdminServiceClient,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	go func() { done <- runTestNode(ctx, node, testLogger(), listener) }()
 	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		cancel()

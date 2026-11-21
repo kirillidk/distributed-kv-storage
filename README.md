@@ -1,7 +1,7 @@
 # Distributed KV Storage
 
 Distributed key-value storage written in Go. The project consists of separate
-`kv-engine`, `repl`, `rpc-proxy`, `kvctl`, and `clusterstat` binaries.
+`kv-engine`, `repl`, `kvctl`, and `clusterstat` binaries.
 
 ## API contracts
 
@@ -101,13 +101,37 @@ nodes:
 
 See [the manifest documentation](docs/manifest.md) for the field descriptions.
 
-With `wal_path` on every node, repl elects a Raft leader and replicates WAL
-records through AppendEntries, repairing conflicting uncommitted suffixes.
+With `wal_path` on every node of a shard, repl elects a leader for that shard
+and replicates WAL records through AppendEntries, repairing conflicting
+uncommitted suffixes.
 Writes complete after a durable majority commits an entry in the current term
 and the local engine applies it. Followers apply the committed prefix in the
 background. Term, votedFor and the commit boundary survive restarts in
 `<wal_path>.raft-state`; recovery never applies an uncommitted WAL suffix.
-Send writes to the leader's engine; proposals on other nodes return `Unavailable`.
+Send writes to the shard leader's engine. Followers reject proposals with `Unavailable`.
+
+## Sharding
+
+Set `shard_count` in the manifest and assign each node a zero-based `shard_id`.
+Replicas with the same `shard_id` share a Raft log and quorum. Manifests that omit both
+fields place every node in shard 0.
+
+Clients select the shard with `CRC32-IEEE(key bytes) % shard_count`. Send a write
+to that shard's leader or read from one of its ready engines. An engine returns
+`FailedPrecondition` for a key owned by another shard. Changing the shard count
+of an existing dataset requires migration. [Go key placement function](api/sharding/sharding.go)
+
+The local example has one node per shard. With the binaries on your `PATH`,
+start each node in a separate terminal from the repository root.
+
+```sh
+repl --manifest examples/two-shards/cluster.yaml --node-id node-a
+repl --manifest examples/two-shards/cluster.yaml --node-id node-b
+```
+
+Connect `kvctl --address 127.0.0.1:8001` to set or get `alpha` (shard 0).
+Use `127.0.0.1:8002` for `beta` (shard 1). Each node writes its WAL in the
+working directory. [Two-shard manifest](examples/two-shards/cluster.yaml)
 
 ## Development
 
