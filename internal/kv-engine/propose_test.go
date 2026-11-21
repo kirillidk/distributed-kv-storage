@@ -18,6 +18,47 @@ type callbackProposer struct {
 	propose func(context.Context, []byte) error
 }
 
+func TestForeignKeyRejectedBeforeProposeOrApply(t *testing.T) {
+	ctx := t.Context()
+	store := CreateMemoryStorage()
+	proposer := callbackProposer{propose: func(context.Context, []byte) error {
+		t.Fatal("foreign key reached Propose")
+		return nil
+	}}
+	s, err := CreateShardServer(store, proposer, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("beta") // CRC32-IEEE maps this key to shard 1.
+	payload, err := encodeSetEvent(key, []byte("1"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, applyErr := s.Apply(ctx, &enginev1.ApplyRequest{Offset: uint64(len(payload)), Payload: payload})
+	if _, err := s.SetReady(ctx, &enginev1.SetReadyRequest{Ready: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, setErr := s.Set(ctx, &kvv1.SetRequest{Key: key})
+	_, getErr := s.Get(ctx, &kvv1.GetRequest{Key: key})
+	_, expiryErr := s.GetExpireTime(ctx, &kvv1.GetExpireTimeRequest{Key: key})
+	_, addErr := s.Add(ctx, &kvv1.AddRequest{Key: key})
+	_, replaceErr := s.Replace(ctx, &kvv1.ReplaceRequest{Key: key})
+	_, deleteErr := s.Delete(ctx, &kvv1.DeleteRequest{Key: key})
+	_, incrErr := s.Incr(ctx, &kvv1.IncrRequest{Key: key})
+	_, decrErr := s.Decr(ctx, &kvv1.DecrRequest{Key: key})
+	for method, err := range map[string]error{
+		"Apply": applyErr, "Set": setErr, "Get": getErr, "GetExpireTime": expiryErr,
+		"Add": addErr, "Replace": replaceErr, "Delete": deleteErr, "Incr": incrErr, "Decr": decrErr,
+	} {
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("%s returned %v", method, err)
+		}
+	}
+	if store.EntryCount() != 0 || s.appliedOffset != 0 {
+		t.Fatal("foreign key changed storage or the applied offset")
+	}
+}
+
 func (p callbackProposer) Propose(ctx context.Context, in *replv1.ProposeRequest, _ ...grpc.CallOption) (*replv1.ProposeResponse, error) {
 	if err := p.propose(ctx, in.Payload); err != nil {
 		return nil, err

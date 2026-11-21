@@ -65,3 +65,14 @@ func TestLoadErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadShardedManifest(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "examples", "two-shards", "cluster.yaml")
+	cfg, err := LoadArgs([]string{"--manifest", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Components) != 4 || cfg.Components[0].NodeID != "node-a" || cfg.Components[2].NodeID != "node-b" {
+		t.Fatalf("unexpected shard components: %+v", cfg.Components)
+	}
+}

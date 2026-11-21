@@ -13,13 +13,15 @@ import (
 )
 
 type manifest struct {
-	Nodes []nodeConfig `yaml:"nodes"`
+	ShardCount uint32       `yaml:"shard_count"`
+	Nodes      []nodeConfig `yaml:"nodes"`
 }
 
 type nodeConfig struct {
-	ID     string       `yaml:"id"`
-	Repl   replConfig   `yaml:"repl"`
-	Engine engineConfig `yaml:"engine"`
+	ID      string       `yaml:"id"`
+	ShardID uint32       `yaml:"shard_id"`
+	Repl    replConfig   `yaml:"repl"`
+	Engine  engineConfig `yaml:"engine"`
 }
 
 type replConfig struct {

@@ -76,6 +76,11 @@ func testNode(mode string) NodeConfig {
 	}
 }
 
+func runTestNode(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener) error {
+	manifest := &Manifest{ShardCount: 1, Nodes: []NodeConfig{node}}
+	return runOnListener(ctx, manifest, node.ID, logger, listener)
+}
+
 func TestRunServesHealthThroughEngineRestartAndShutdown(t *testing.T) {
 	t.Setenv("REPL_TEST_ENGINE", "1")
 	starts := filepath.Join(t.TempDir(), "starts")
@@ -87,7 +92,7 @@ func TestRunServesHealthThroughEngineRestartAndShutdown(t *testing.T) {
 	node := testNode("exit")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	go func() { done <- runTestNode(ctx, node, testLogger(), listener) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -141,7 +146,7 @@ func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
 	node.Repl.LogDir = filepath.Join(dir, "logs")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	go func() { done <- runTestNode(ctx, node, testLogger(), listener) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -232,7 +237,7 @@ func TestRunRestartsAfterNonzeroExit(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("exit"), testLogger()) }()
+	go func() { done <- runTestNode(ctx, testNode("exit"), testLogger(), nil) }()
 	pids := waitForStarts(t, starts, 2)
 	cancel()
 	if pids[0] == pids[1] {
@@ -256,7 +261,7 @@ func TestRunRestartsAfterZeroExit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("exit-zero"), logger) }()
+	go func() { done <- runTestNode(ctx, testNode("exit-zero"), logger, nil) }()
 	pids := waitForStarts(t, starts, 2)
 	cancel()
 	if pids[0] == pids[1] {
@@ -284,7 +289,7 @@ func TestRunKillsEngineAfterShutdownTimeout(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("ignore-term"), testLogger()) }()
+	go func() { done <- runTestNode(ctx, testNode("ignore-term"), testLogger(), nil) }()
 	pid := waitForStarts(t, starts, 1)[0]
 	cancel()
 	select {
@@ -314,7 +319,7 @@ func TestRunStopsEngineGracefullyAndLogsOutput(t *testing.T) {
 	node.Engine.ShutdownTimeout = Duration{3 * time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, node, logger) }()
+	go func() { done <- runTestNode(ctx, node, logger, nil) }()
 	pid := waitForStarts(t, starts, 1)[0]
 	cancel()
 	select {

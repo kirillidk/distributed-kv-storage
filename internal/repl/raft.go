@@ -48,7 +48,7 @@ type raftStatus struct {
 
 // raftNode implements elections, log replication and quorum commit. All state transitions
 // and WAL appends are serialized by mu; network calls never hold that lock.
-// Membership is static and includes every node in the manifest, even offline ones.
+// Membership is static and includes every node of this shard, even offline ones.
 type raftNode struct {
 	raftv1.UnimplementedRaftServiceServer
 	mu             sync.Mutex

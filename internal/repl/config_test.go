@@ -34,6 +34,9 @@ func TestLoadManifestAndFindNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if manifest.ShardCount != 1 || manifest.Nodes[0].ShardID != 0 {
+		t.Fatalf("legacy shard assignment: %+v", manifest)
+	}
 	node, err := manifest.FindNode("node_0")
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +102,39 @@ func TestManifestRequiresWALOnEveryRaftMember(t *testing.T) {
 	}
 }
 
+func TestShardedManifest(t *testing.T) {
+	m, err := LoadManifest(filepath.Join("..", "..", "examples", "two-shards", "cluster.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ShardCount != 2 || m.Nodes[0].ShardID != 0 || m.Nodes[1].ShardID != 1 {
+		t.Fatalf("unexpected shard assignments: %+v", m)
+	}
+	// A standalone memory shard can coexist with a durable group.
+	m.Nodes[1].Repl.WALPath = ""
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	replica := m.Nodes[1]
+	replica.ID, replica.Repl.ConnectAddr, replica.Engine.ConnectAddr = "node-c", "node-c:7001", "node-c:8001"
+	m.Nodes = append(m.Nodes, replica)
+	if err := m.Validate(); err == nil {
+		t.Fatal("accepted two independent memory engines as replicas of the same shard")
+	}
+	m.Nodes[1].Repl.WALPath = "node-b.wal"
+	if err := m.Validate(); err == nil {
+		t.Fatal("accepted a replica without a WAL in a Raft shard")
+	}
+	m.Nodes[2].Repl.WALPath = "node-c.wal"
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	m.ShardCount = 3
+	if err := m.Validate(); err == nil {
+		t.Fatal("accepted shard 2 without any members")
+	}
+}
+
 func TestLoadManifestErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -106,6 +142,11 @@ func TestLoadManifestErrors(t *testing.T) {
 		want    string
 	}{
 		{"invalid YAML", "nodes: [", "parse manifest"},
+		{"zero shard count", "shard_count: 0\n" + validManifest, "shard_count"},
+		{"fractional shard count", "shard_count: 1.5\n" + validManifest, "unsigned integers"},
+		{"too many shards", "shard_count: 4294967295\n" + validManifest, "shard_count"},
+		{"unknown shard", strings.Replace(validManifest, "id: node_0", "id: node_0\n    shard_id: 1", 1), "shard_id"},
+		{"fractional shard ID", strings.Replace(validManifest, "id: node_0", "id: node_0\n    shard_id: 0.5", 1), "unsigned integers"},
 		{"duplicate ID", validManifest + `  - id: node_0
     repl:
       listen_addr: 0.0.0.0:7002

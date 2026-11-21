@@ -16,13 +16,26 @@ import (
 // Manifest describes every node in the cluster. The whole manifest is
 // validated before a local node is selected.
 type Manifest struct {
-	Nodes []NodeConfig `yaml:"nodes"`
+	ShardCount ShardNumber  `yaml:"shard_count"`
+	Nodes      []NodeConfig `yaml:"nodes"`
 }
 
 type NodeConfig struct {
-	ID     string       `yaml:"id"`
-	Repl   ReplConfig   `yaml:"repl"`
-	Engine EngineConfig `yaml:"engine"`
+	ID      string       `yaml:"id"`
+	ShardID ShardNumber  `yaml:"shard_id"`
+	Repl    ReplConfig   `yaml:"repl"`
+	Engine  EngineConfig `yaml:"engine"`
+}
+
+// ShardNumber requires an integer in YAML. yaml.v3 otherwise truncates
+// floating-point values when decoding into an unsigned integer.
+type ShardNumber uint32
+
+func (s *ShardNumber) UnmarshalYAML(node *yaml.Node) error {
+	if node.ShortTag() != "!!int" {
+		return fmt.Errorf("line %d: shard IDs and counts must be unsigned integers", node.Line)
+	}
+	return node.Decode((*uint32)(s))
 }
 
 type ReplConfig struct {
@@ -67,7 +80,7 @@ func LoadManifest(path string) (*Manifest, error) {
 	decoder := yaml.NewDecoder(file)
 	decoder.KnownFields(true)
 
-	var manifest Manifest
+	manifest := Manifest{ShardCount: 1}
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parse manifest %q: %w", path, err)
 	}
@@ -88,11 +101,15 @@ func (m *Manifest) Validate() error {
 	if len(m.Nodes) == 0 {
 		return errors.New("nodes must contain at least one node")
 	}
+	if m.ShardCount == 0 || uint64(m.ShardCount) > uint64(len(m.Nodes)) {
+		return errors.New("shard_count must be between 1 and the number of nodes")
+	}
 
 	seenIDs := make(map[string]int, len(m.Nodes))
 	seenReplAddrs := make(map[string]int, len(m.Nodes))
 	seenEngineAddrs := make(map[string]int, len(m.Nodes))
-	walNodes := 0
+	members := make([]int, m.ShardCount)
+	walNodes := make([]int, m.ShardCount)
 	for i, node := range m.Nodes {
 		label := fmt.Sprintf("nodes[%d]", i)
 		if strings.TrimSpace(node.ID) == "" {
@@ -102,8 +119,12 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("duplicate node ID %q at nodes[%d] and %s", node.ID, previous, label)
 		}
 		seenIDs[node.ID] = i
+		if node.ShardID >= m.ShardCount {
+			return fmt.Errorf("%s.shard_id %d is outside [0, %d)", label, node.ShardID, m.ShardCount)
+		}
+		members[node.ShardID]++
 		if node.Repl.WALPath != "" {
-			walNodes++
+			walNodes[node.ShardID]++
 		}
 		if err := validateAddress(node.Repl.ListenAddr, true); err != nil {
 			return fmt.Errorf("%s.repl.listen_addr: %w", label, err)
@@ -132,8 +153,16 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("%s.engine.shutdown_timeout must be positive", label)
 		}
 	}
-	if walNodes != 0 && walNodes != len(m.Nodes) {
-		return errors.New("Raft requires repl.wal_path on every node in the manifest")
+	for id, size := range members {
+		if size == 0 {
+			return fmt.Errorf("shard %d has no nodes", id)
+		}
+		// Legacy WAL-less manifests may supervise independent in-memory engines.
+		// Replicas of an explicitly partitioned keyspace must share a log.
+		needsWAL := walNodes[id] > 0 || (m.ShardCount > 1 && size > 1)
+		if needsWAL && walNodes[id] != size {
+			return fmt.Errorf("Raft requires repl.wal_path on every node in shard %d", id)
+		}
 	}
 	return nil
 }

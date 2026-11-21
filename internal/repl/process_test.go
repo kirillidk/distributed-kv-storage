@@ -24,28 +24,45 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func buildTestBinary(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	cmd := exec.Command("go", "build", "-o", path, "./cmd/"+name)
+	cmd.Dir = filepath.Join("..", "..")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v\n%s", name, err, out)
+	}
+	return path
+}
+
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().String()
+}
+
+func testConnection(t *testing.T, addr string) *grpc.ClientConn {
+	t.Helper()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and crashes real repl/kv-engine processes")
 	}
 	dir := t.TempDir()
-	for _, name := range []string{"repl", "kv-engine"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
-		cmd.Dir = filepath.Join("..", "..")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("build %s: %v\n%s", name, err, out)
-		}
-	}
-	freeAddress := func() string {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		addr := l.Addr().String()
-		l.Close()
-		return addr
-	}
-	replAddr, engineAddr := freeAddress(), freeAddress()
+	buildTestBinary(t, dir, "repl")
+	buildTestBinary(t, dir, "kv-engine")
+	replAddr, engineAddr := freeAddress(t), freeAddress(t)
 	_, port, err := net.SplitHostPort(engineAddr)
 	if err != nil {
 		t.Fatal(err)
@@ -99,14 +116,6 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		}
 		t.Fatal(message)
 	}
-	connect := func(addr string) *grpc.ClientConn {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close() })
-		return conn
-	}
 	pidPattern := regexp.MustCompile(`msg="engine started" pid=([0-9]+)`)
 	enginePID := func(logPath string, count int) int {
 		var pid int
@@ -122,7 +131,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		return pid
 	}
 	log1 := start("first.log")
-	replConn, engineConn := connect(replAddr), connect(engineAddr)
+	replConn, engineConn := testConnection(t, replAddr), testConnection(t, engineAddr)
 	poll("proposal service never became ready", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
@@ -307,7 +316,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	<-done
 	active = nil
 	log2 := start("second.log")
-	engineConn = connect(engineAddr)
+	engineConn = testConnection(t, engineAddr)
 	enginePID(log2, 1)
 	waitOffset("repl and engine SIGKILL")
 	verify("repl and engine SIGKILL")

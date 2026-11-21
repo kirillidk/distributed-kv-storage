@@ -40,15 +40,11 @@ func run(args []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	node, err := manifest.FindNode(*nodeID)
-	if err != nil {
-		return err
-	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	if err := repl.Run(ctx, *node, logger, manifest.Nodes...); err != nil {
-		return fmt.Errorf("supervise node %q: %w", node.ID, err)
+	if err := repl.Run(ctx, manifest, *nodeID, logger); err != nil {
+		return fmt.Errorf("supervise node %q: %w", *nodeID, err)
 	}
 	return nil
 }
