@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: kv-engine
+    static_configs:
+      - targets:
+          - node-1:2112
+        labels:
+          node_id: node-1
+          shard_id: shard-a

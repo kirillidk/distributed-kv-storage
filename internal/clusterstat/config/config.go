@@ -25,11 +25,12 @@ type Component struct {
 }
 
 type Config struct {
-	ManifestPath string
-	Listen       string
-	PollInterval time.Duration
-	CheckTimeout time.Duration
-	Components   []Component
+	ManifestPath  string
+	Listen        string
+	PollInterval  time.Duration
+	CheckTimeout  time.Duration
+	PrometheusURL string
+	Components    []Component
 }
 
 func Load() (*Config, error) {
@@ -44,6 +45,7 @@ func LoadArgs(args []string) (*Config, error) {
 	flags.StringVar(&cfg.Listen, "listen", "127.0.0.1:8080", "HTTP listen address")
 	flags.DurationVar(&cfg.PollInterval, "poll-interval", 2*time.Second, "how often to poll health")
 	flags.DurationVar(&cfg.CheckTimeout, "check-timeout", 1*time.Second, "timeout for one health check")
+	flags.StringVar(&cfg.PrometheusURL, "prometheus-url", "", "Prometheus base URL (e.g. http://prometheus:9090); empty disables metrics API")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}

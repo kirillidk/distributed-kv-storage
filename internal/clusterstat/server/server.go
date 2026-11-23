@@ -11,6 +11,7 @@ import (
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/collector"
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/config"
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/logclient"
+	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/promclient"
 	"github.com/kirillidk/distributed-kv-storage/internal/clusterstat/web"
 )
 
@@ -18,13 +19,16 @@ type Server struct {
 	httpServer *http.Server
 	collector  *collector.Collector
 	logs       *logclient.Client
+	prom       *promclient.Client
 }
 
-func New(addr string, col *collector.Collector, components []config.Component, checkTimeout time.Duration) *Server {
+func New(addr string, col *collector.Collector, components []config.Component, checkTimeout time.Duration, prometheusURL string) *Server {
 	mux := http.NewServeMux()
+
 	s := &Server{
 		collector: col,
 		logs:      logclient.New(components, checkTimeout),
+		prom:      promclient.New(prometheusURL, 5*time.Second),
 		httpServer: &http.Server{
 			Addr:              addr,
 			Handler:           mux,
@@ -34,9 +38,12 @@ func New(addr string, col *collector.Collector, components []config.Component, c
 
 	mux.HandleFunc("GET /api/v1/components", s.handleComponents)
 	mux.HandleFunc("GET /api/v1/components/{node_id}/{type}/logs", s.handleComponentLogsAPI)
+	mux.HandleFunc("GET /api/v1/metrics/query_range", s.handleMetricsQueryRange)
+	mux.HandleFunc("GET /api/v1/metrics/status", s.handleMetricsStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /{$}", s.serveIndex)
 	mux.HandleFunc("GET /components/{node_id}/{type}/logs", s.serveLogsPage)
+	mux.HandleFunc("GET /metrics", s.serveMetricsPage)
 
 	return s
 }
@@ -47,6 +54,7 @@ func (s *Server) Start() error {
 	if err != nil && err != http.ErrServerClosed {
 		return err
 	}
+
 	return nil
 }
 
@@ -71,7 +79,9 @@ func (s *Server) serveLogsPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
 	data, err := web.FS.ReadFile("logs.html")
+
 	if err != nil {
 		http.Error(w, "logs.html not found", http.StatusInternalServerError)
 		return
@@ -161,6 +171,7 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 		Lines      []string `json:"lines"`
 		FetchError string   `json:"fetch_error,omitempty"`
 	}
+
 	out := respBody{
 		NodeID:     st.NodeID,
 		ShardID:    st.ShardID,
@@ -173,6 +184,7 @@ func (s *Server) handleComponentLogsAPI(w http.ResponseWriter, r *http.Request) 
 		Data:       []byte{},
 		Lines:      []string{},
 	}
+
 	if err != nil {
 		out.FetchError = err.Error()
 	} else {
@@ -194,4 +206,84 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+func (s *Server) serveMetricsPage(w http.ResponseWriter, r *http.Request) {
+	data, err := web.FS.ReadFile("metrics.html")
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><title>Metrics</title><p>metrics.html coming soon</p><p><a href="/">back</a></p>`))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleMetricsStatus(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{
+		"configured": s.prom.Configured(),
+		"ok":         false,
+	}
+
+	if !s.prom.Configured() {
+		out["error"] = "prometheus URL is not configured"
+	} else if err := s.prom.Ready(r.Context()); err != nil {
+		out["error"] = err.Error()
+	} else {
+		out["ok"] = true
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) handleMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	query := q.Get("query")
+	if query == "" {
+		http.Error(w, "query is required", http.StatusBadRequest)
+		return
+	}
+
+	end := time.Now()
+	start := end.Add(-15 * time.Minute)
+	step := 15 * time.Second
+
+	if v := q.Get("start"); v != "" {
+		sec, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			http.Error(w, "start must be unix seconds", http.StatusBadRequest)
+			return
+		}
+		start = time.Unix(sec, 0)
+	}
+	if v := q.Get("end"); v != "" {
+		sec, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			http.Error(w, "end must be unix seconds", http.StatusBadRequest)
+			return
+		}
+		end = time.Unix(sec, 0)
+	}
+	if v := q.Get("step"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			http.Error(w, "step must be duration (e.g. 15s)", http.StatusBadRequest)
+			return
+		}
+		step = d
+	}
+
+	result, err := s.prom.QueryRange(r.Context(), query, start, end, step)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(result)
 }

@@ -76,7 +76,7 @@ func newPagedLogServer(t *testing.T, engines map[string][]byte) (*Server, *paged
 		components = append(components, config.Component{NodeID: "node-1", Type: config.TypeKVEngine, ShardID: id})
 	}
 	col := collector.New(components, time.Hour, time.Second)
-	return New("127.0.0.1:0", col, components, time.Second), logs
+	return New("127.0.0.1:0", col, components, time.Second, ""), logs
 }
 
 type logPage struct {

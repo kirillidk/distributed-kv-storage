@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+        <title>Cluster Metrics</title>
+
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+        <style>
+            :root {
+            --bg: #0f1419; --card: #1a2332; --border: #2d3a4f;
+            --text: #e7ecf3; --muted: #8b9bb4; --link: #7eb8ff;
+            --up: #3dd68c; --down: #f07178;
+            }
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body {
+            font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+            background: var(--bg); color: var(--text);
+            min-height: 100vh; padding: 2rem;
+            }
+            a { color: var(--link); text-decoration: none; }
+            a:hover { text-decoration: underline; }
+            h1 { font-size: 1.3rem; margin: 0.5rem 0 1rem; }
+            .bar {
+            display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+            margin-bottom: 1rem; color: var(--muted); font-size: 0.85rem;
+            }
+            label { display: flex; flex-direction: column; gap: 0.25rem; }
+            select, button {
+            background: var(--card); color: var(--text);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.4rem 0.6rem; font: inherit;
+            }
+            button { cursor: pointer; }
+            button:hover { border-color: var(--link); }
+            .status { padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); }
+            .status.ok { border-color: var(--up); color: var(--up); }
+            .status.err { border-color: var(--down); color: var(--down); }
+            .grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1rem;
+            }
+            .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 10px; padding: 1rem;
+            }
+            .card h2 { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; text-transform: uppercase; }
+            canvas { width: 100% !important; max-height: 220px; }
+            .footer { margin-top: 1.5rem; color: var(--muted); font-size: 0.8rem; }
+        </style>
+    </head>
+
+    <body>
+        <p><a href="/">← back to cluster</a></p>
+
+        <h1>Metrics</h1>
+
+        <div class="bar">
+            <label>Replica
+                <select id="replica"></select>
+            </label>
+
+            <label>Method
+                <select id="method">
+                    <option value="">all</option>
+                    <option>Get</option>
+                    <option>Set</option>
+                    <option>Delete</option>
+                    <option>Add</option>
+                    <option>Replace</option>
+                    <option>Incr</option>
+                    <option>Decr</option>
+                </select>
+            </label>
+
+            <label>Range
+                <select id="range">
+                    <option value="900">15m</option>
+                    <option value="3600" selected>1h</option>
+                    <option value="21600">6h</option>
+                </select>
+            </label>
+
+            <button type="button" id="refresh">Refresh</button>
+
+            <span id="prom-status" class="status">checking…</span>
+        </div>
+
+        <div class="grid">
+            <div class="card"><h2>RPS (requests / s)</h2><canvas id="chart-rps"></canvas></div>
+            <div class="card"><h2>Latency p50 / p95 / p99 (s)</h2><canvas id="chart-lat"></canvas></div>
+            <div class="card"><h2>Get hit / miss (rate)</h2><canvas id="chart-hit"></canvas></div>
+            <div class="card"><h2>applied offset</h2><canvas id="chart-offset"></canvas></div>
+            <div class="card"><h2>entries count</h2><canvas id="chart-entries"></canvas></div>
+            <div class="card"><h2>goroutines</h2><canvas id="chart-go"></canvas></div>
+        </div>
+
+        <p class="footer">Data via clusterstat → Prometheus. Auto-refresh 15s. Last error kept charts if any.</p>
+
+        <script>
+            const charts = {};
+            const replicaSelect = document.getElementById('replica');
+            let activeRefresh;
+
+            function chartOpts() {
+                return {
+                    responsive: true,
+                    animation: false,
+                    scales: {
+                        x: { ticks: { color: '#8b9bb4', maxTicksLimit: 6 }, grid: { color: '#2d3a4f' } },
+                        y: { ticks: { color: '#8b9bb4' }, grid: { color: '#2d3a4f' }, beginAtZero: true }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#e7ecf3',
+                                usePointStyle: true,
+                                pointStyle: 'circle',
+                                boxWidth: 8,
+                                boxHeight: 8
+                            }
+                        }
+                    }
+                };
+            }
+
+            function ensureChart(id, label, color) {
+                if (charts[id]) return charts[id];
+                const ctx = document.getElementById(id).getContext('2d');
+                charts[id] = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: [], datasets: [{ label, data: [], borderColor: color, tension: 0.2, pointRadius: 0 }] },
+                    options: chartOpts()
+                });
+
+                return charts[id];
+            }
+
+            function ensureMulti(id, defs) {
+                if (charts[id]) return charts[id];
+                const ctx = document.getElementById(id).getContext('2d');
+                charts[id] = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: defs.map(d => ({
+                            label: d.label, data: [], borderColor: d.color, tension: 0.2, pointRadius: 0
+                        }))
+                    },
+                    options: chartOpts()
+                });
+
+                return charts[id];
+            }
+
+            function applySeries(chart, seriesList) {
+                const timestamps = [...new Set(seriesList.flat().map(p => p.t))].sort((a, b) => a - b);
+                chart.data.labels = timestamps.map(t => new Date(t * 1000).toLocaleTimeString());
+                chart.data.datasets.forEach((dataset, index) => {
+                    const values = new Map((seriesList[index] ?? []).map(p => [p.t, p.v]));
+                    dataset.data = timestamps.map(t => values.get(t) ?? null);
+                });
+                chart.update();
+            }
+
+            async function promQuery(query, start, end, step, signal) {
+                const params = new URLSearchParams({ query, start, end, step });
+                const res = await fetch('/api/v1/metrics/query_range?' + params, {signal});
+                const body = await res.json();
+                if (!res.ok) throw new Error(body.error || res.statusText);
+                if (body.series.length > 1) {
+                    throw new Error('Multiple Prometheus series match the selected replica');
+                }
+                return body.series[0]?.values ?? [];
+            }
+
+            async function loadReplicas() {
+                const res = await fetch('/api/v1/components');
+                if (!res.ok) throw new Error(res.statusText);
+                const {components} = await res.json();
+                const replicas = components
+                    .filter(c => c.type === 'kv-engine' && c.node_id && c.shard_id)
+                    .sort((a, b) => a.node_id.localeCompare(b.node_id) || a.shard_id.localeCompare(b.shard_id));
+                for (const {node_id, shard_id} of replicas) {
+                    replicaSelect.add(new Option(
+                        node_id + ' / ' + shard_id, JSON.stringify([node_id, shard_id])));
+                }
+            }
+
+            function setStatus(text, state = '') {
+                const el = document.getElementById('prom-status');
+                el.textContent = text;
+                el.className = 'status ' + state;
+            }
+
+            function rateQuery(name, labels) {
+                return `sum(rate(${name}{${labels}}[1m]))`;
+            }
+
+            async function loadCharts() {
+                if (!replicaSelect.value) return;
+                activeRefresh?.abort();
+                activeRefresh = new AbortController();
+                const {signal} = activeRefresh;
+                const [node, shard] = JSON.parse(replicaSelect.value);
+                const labels = `node_id=${JSON.stringify(node)},shard_id=${JSON.stringify(shard)}`;
+                const method = document.getElementById('method').value;
+                const requestLabels = method ? `${labels},method=${JSON.stringify(method)}` : labels;
+                const buckets = `sum by (le) (rate(kvengine_request_duration_seconds_bucket{${requestLabels}}[1m]))`;
+                const queries = {
+                    'chart-rps': [rateQuery('kvengine_request_count_total', requestLabels)],
+                    'chart-lat': [0.5, 0.95, 0.99].map(q => `histogram_quantile(${q}, ${buckets})`),
+                    'chart-hit': [
+                        rateQuery('kvengine_get_hits_total', labels),
+                        rateQuery('kvengine_get_misses_total', labels)
+                    ],
+                    'chart-offset': [`kvengine_applied_offset_bytes{${labels}}`],
+                    'chart-entries': [`kvengine_entries_count{${labels}}`],
+                    'chart-go': [`go_goroutines{${labels}}`]
+                };
+                const rangeSec = Number(document.getElementById('range').value);
+                const end = Math.floor(Date.now() / 1000);
+                const start = end - rangeSec;
+                const step = rangeSec <= 900 ? '10s' : rangeSec <= 3600 ? '15s' : '30s';
+
+                try {
+                    const results = await Promise.all(Object.entries(queries).map(async ([id, expressions]) => [
+                        id, await Promise.all(expressions.map(query => promQuery(query, start, end, step, signal)))
+                    ]));
+                    if (signal.aborted) return;
+
+                    for (const [id, series] of results) {
+                        applySeries(charts[id], series);
+                    }
+                    const hasSamples = results.some(([, series]) =>
+                        series.some(points => points.some(point => point.v !== null)));
+                    setStatus(hasSamples ? 'Prometheus: ok' : 'No samples for this replica', hasSamples ? 'ok' : '');
+                } catch (error) {
+                    if (!signal.aborted) setStatus('Prometheus: ' + error.message, 'err');
+                }
+            }
+
+            function changeSelection() {
+                setStatus('Loading…');
+                for (const chart of Object.values(charts)) applySeries(chart, []);
+                return loadCharts();
+            }
+
+            (async function init() {
+                try {
+                    if (typeof Chart !== 'function') throw new Error('Chart.js could not load');
+                    ensureChart('chart-rps', 'RPS', '#7eb8ff');
+                    ensureMulti('chart-lat', [
+                        { label: 'p50', color: '#3dd68c' },
+                        { label: 'p95', color: '#ffcc66' },
+                        { label: 'p99', color: '#f07178' }
+                    ]);
+                    ensureMulti('chart-hit', [
+                        { label: 'hit', color: '#3dd68c' },
+                        { label: 'miss', color: '#f07178' }
+                    ]);
+                    ensureChart('chart-offset', 'offset', '#7eb8ff');
+                    ensureChart('chart-entries', 'entries', '#ffcc66');
+                    ensureChart('chart-go', 'goroutines', '#c3a6ff');
+                    await loadReplicas();
+                    if (!replicaSelect.value) {
+                        setStatus('No engine replicas in the manifest', 'err');
+                        return;
+                    }
+                    document.getElementById('refresh').onclick = loadCharts;
+                    for (const selector of [replicaSelect, document.getElementById('method'), document.getElementById('range')]) {
+                        selector.onchange = changeSelection;
+                    }
+                    await loadCharts();
+                    setInterval(loadCharts, 15000);
+                } catch (error) {
+                    setStatus(error.message, 'err');
+                }
+            })();
+        </script>
+    </body>
+</html>
