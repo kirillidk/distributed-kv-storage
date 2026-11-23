@@ -9,3 +9,4 @@ scrape_configs:
           - node-1:2112
         labels:
           node_id: node-1
+          shard_id: shard-a

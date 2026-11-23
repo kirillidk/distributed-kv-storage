@@ -58,8 +58,8 @@
         <h1>Metrics</h1>
 
         <div class="bar">
-            <label>Node
-                <select id="node"></select>
+            <label>Replica
+                <select id="replica"></select>
             </label>
 
             <label>Method
@@ -101,8 +101,9 @@
 
         <script>
             const charts = {};
-            let lastSeries = {};
-            
+            const replicaSelect = document.getElementById('replica');
+            let activeRefresh;
+
             function chartOpts() {
                 return {
                     responsive: true,
@@ -111,15 +112,15 @@
                         x: { ticks: { color: '#8b9bb4', maxTicksLimit: 6 }, grid: { color: '#2d3a4f' } },
                         y: { ticks: { color: '#8b9bb4' }, grid: { color: '#2d3a4f' }, beginAtZero: true }
                     },
-                    plugins: { 
-                        legend: { 
-                            labels: { 
+                    plugins: {
+                        legend: {
+                            labels: {
                                 color: '#e7ecf3',
                                 usePointStyle: true,
                                 pointStyle: 'circle',
                                 boxWidth: 8,
                                 boxHeight: 8
-                            } 
+                            }
                         }
                     }
                 };
@@ -155,186 +156,128 @@
             }
 
             function applySeries(chart, seriesList) {
-                // seriesList: [{label, values:[{t,v}]}] — align on first series timestamps
-                if (!seriesList.length || !seriesList[0].values.length) return;
-                const labels = seriesList[0].values.map(p => {
-                    const d = new Date(p.t * 1000);
-                    return d.toLocaleTimeString();
-                });
-
-                chart.data.labels = labels;
-                seriesList.forEach((s, i) => {
-                    if (!chart.data.datasets[i]) return;
-                    const map = new Map(s.values.map(p => [p.t, p.v]));
-                    chart.data.datasets[i].data = seriesList[0].values.map(p => map.has(p.t) ? map.get(p.t) : null);
-                    if (s.label) chart.data.datasets[i].label = s.label;
+                const timestamps = [...new Set(seriesList.flat().map(p => p.t))].sort((a, b) => a - b);
+                chart.data.labels = timestamps.map(t => new Date(t * 1000).toLocaleTimeString());
+                chart.data.datasets.forEach((dataset, index) => {
+                    const values = new Map((seriesList[index] ?? []).map(p => [p.t, p.v]));
+                    dataset.data = timestamps.map(t => values.get(t) ?? null);
                 });
                 chart.update();
             }
 
-            async function promQuery(query, start, end, step) {
-                const u = new URL('/api/v1/metrics/query_range', location.origin);
-                u.searchParams.set('query', query);
-                u.searchParams.set('start', String(start));
-                u.searchParams.set('end', String(end));
-                u.searchParams.set('step', step);
-                const res = await fetch(u);
+            async function promQuery(query, start, end, step, signal) {
+                const params = new URLSearchParams({ query, start, end, step });
+                const res = await fetch('/api/v1/metrics/query_range?' + params, {signal});
                 const body = await res.json();
                 if (!res.ok) throw new Error(body.error || res.statusText);
-
-                return body.series || [];
-            }
-
-            function nodeFilter() {
-                const n = document.getElementById('node').value;
-                return n ? `,node_id="${n}"` : '';
-            }
-
-            function methodFilter() {
-                const m = document.getElementById('method').value;
-                return m ? `,method="${m}"` : '';
-            }
-
-            async function loadNodes() {
-                const res = await fetch('/api/v1/components');
-                const data = await res.json();
-                const nodes = [...new Set((data.components || []).map(c => c.node_id).filter(Boolean))];
-                const sel = document.getElementById('node');
-                sel.innerHTML = nodes.map(n => `<option value="${n}">${n}</option>`).join('');
-                if (!nodes.length) sel.innerHTML = '<option value="">—</option>';
-            }
-
-            async function loadStatus() {
-                const el = document.getElementById('prom-status');
-                try {
-                    const res = await fetch('/api/v1/metrics/status');
-                    const data = await res.json();
-                    if (data.ok) {
-                    el.textContent = 'Prometheus: ok';
-                    el.className = 'status ok';
-                    } else {
-                    el.textContent = 'Prometheus: ' + (data.error || 'unavailable');
-                    el.className = 'status err';
-                    }
-                } catch (e) {
-                    el.textContent = 'Prometheus: ' + e.message;
-                    el.className = 'status err';
+                if (body.series.length > 1) {
+                    throw new Error('Multiple Prometheus series match the selected replica');
                 }
+                return body.series[0]?.values ?? [];
+            }
+
+            async function loadReplicas() {
+                const res = await fetch('/api/v1/components');
+                if (!res.ok) throw new Error(res.statusText);
+                const {components} = await res.json();
+                const replicas = components
+                    .filter(c => c.type === 'kv-engine' && c.node_id && c.shard_id)
+                    .sort((a, b) => a.node_id.localeCompare(b.node_id) || a.shard_id.localeCompare(b.shard_id));
+                for (const {node_id, shard_id} of replicas) {
+                    replicaSelect.add(new Option(
+                        node_id + ' / ' + shard_id, JSON.stringify([node_id, shard_id])));
+                }
+            }
+
+            function setStatus(text, state = '') {
+                const el = document.getElementById('prom-status');
+                el.textContent = text;
+                el.className = 'status ' + state;
+            }
+
+            function rateQuery(name, labels) {
+                return `sum(rate(${name}{${labels}}[1m]))`;
             }
 
             async function loadCharts() {
-                const rangeSec = parseInt(document.getElementById('range').value, 10) || 3600;
+                if (!replicaSelect.value) return;
+                activeRefresh?.abort();
+                activeRefresh = new AbortController();
+                const {signal} = activeRefresh;
+                const [node, shard] = JSON.parse(replicaSelect.value);
+                const labels = `node_id=${JSON.stringify(node)},shard_id=${JSON.stringify(shard)}`;
+                const method = document.getElementById('method').value;
+                const requestLabels = method ? `${labels},method=${JSON.stringify(method)}` : labels;
+                const buckets = `sum by (le) (rate(kvengine_request_duration_seconds_bucket{${requestLabels}}[1m]))`;
+                const queries = {
+                    'chart-rps': [rateQuery('kvengine_request_count_total', requestLabels)],
+                    'chart-lat': [0.5, 0.95, 0.99].map(q => `histogram_quantile(${q}, ${buckets})`),
+                    'chart-hit': [
+                        rateQuery('kvengine_get_hits_total', labels),
+                        rateQuery('kvengine_get_misses_total', labels)
+                    ],
+                    'chart-offset': [`kvengine_applied_offset_bytes{${labels}}`],
+                    'chart-entries': [`kvengine_entries_count{${labels}}`],
+                    'chart-go': [`go_goroutines{${labels}}`]
+                };
+                const rangeSec = Number(document.getElementById('range').value);
                 const end = Math.floor(Date.now() / 1000);
                 const start = end - rangeSec;
                 const step = rangeSec <= 900 ? '10s' : rangeSec <= 3600 ? '15s' : '30s';
-                const nf = nodeFilter();
-                const mf = methodFilter();
 
                 try {
-                    const rpsQ = `sum(rate(kvengine_request_count_total{${nf.replace(/^,/, '')}${mf}[1m]))`;
-                    // fix empty label braces
-                    const rpsQuery = buildRateQuery('kvengine_request_count_total', nf, mf);
-                    const rps = await promQuery(rpsQuery, start, end, step);
-                    applySeries(ensureChart('chart-rps', 'RPS', '#7eb8ff'), [{
-                        label: 'RPS',
-                        values: (rps[0] && rps[0].values) || []
-                    }]);
+                    const results = await Promise.all(Object.entries(queries).map(async ([id, expressions]) => [
+                        id, await Promise.all(expressions.map(query => promQuery(query, start, end, step, signal)))
+                    ]));
+                    if (signal.aborted) return;
 
-                    const p50 = await promQuery(histQuantile(0.5, nf, mf), start, end, step);
-                    const p95 = await promQuery(histQuantile(0.95, nf, mf), start, end, step);
-                    const p99 = await promQuery(histQuantile(0.99, nf, mf), start, end, step);
-                    applySeries(ensureMulti('chart-lat', [
-                        { label: 'p50', color: '#3dd68c' },
-                        { label: 'p95', color: '#ffcc66' },
-                        { label: 'p99', color: '#f07178' }
-                    ]), [
-                        { label: 'p50', values: (p50[0] && p50[0].values) || [] },
-                        { label: 'p95', values: (p95[0] && p95[0].values) || [] },
-                        { label: 'p99', values: (p99[0] && p99[0].values) || [] }
-                    ]);
-
-                    const hits = await promQuery(rateQuery('kvengine_get_hits_total', nf), start, end, step);
-                    const misses = await promQuery(rateQuery('kvengine_get_misses_total', nf), start, end, step);
-                    applySeries(ensureMulti('chart-hit', [
-                        { label: 'hit', color: '#3dd68c' },
-                        { label: 'miss', color: '#f07178' }
-                    ]), [
-                        { label: 'hit', values: (hits[0] && hits[0].values) || [] },
-                        { label: 'miss', values: (misses[0] && misses[0].values) || [] }
-                    ]);
-
-                    const off = await promQuery(gaugeQuery('kvengine_applied_offset_bytes', nf), start, end, step);
-                    applySeries(ensureChart('chart-offset', 'offset', '#7eb8ff'), [
-                        { values: (off[0] && off[0].values) || [] }
-                    ]);
-
-                    const ent = await promQuery(gaugeQuery('kvengine_entries_count', nf), start, end, step);
-                    applySeries(ensureChart('chart-entries', 'entries', '#ffcc66'), [
-                        { values: (ent[0] && ent[0].values) || [] }
-                    ]);
-
-                    const gor = await promQuery(gaugeQuery('go_goroutines', nf), start, end, step);
-                    applySeries(ensureChart('chart-go', 'goroutines', '#c3a6ff'), [
-                    {    values: (gor[0] && gor[0].values) || [] }
-                    ]);
-
-                    await loadStatus();
-                } catch (e) {
-                    console.error(e);
-                    const el = document.getElementById('prom-status');
-                    el.textContent = 'Prometheus: ' + e.message;
-                    el.className = 'status err';
-                    // charts keep last successful data
+                    for (const [id, series] of results) {
+                        applySeries(charts[id], series);
+                    }
+                    const hasSamples = results.some(([, series]) =>
+                        series.some(points => points.some(point => point.v !== null)));
+                    setStatus(hasSamples ? 'Prometheus: ok' : 'No samples for this replica', hasSamples ? 'ok' : '');
+                } catch (error) {
+                    if (!signal.aborted) setStatus('Prometheus: ' + error.message, 'err');
                 }
             }
 
-            function labelsFrom(nf, mf) {
-                const parts = [];
-                if (nf) parts.push(nf.replace(/^,/, ''));
-                if (mf) parts.push(mf.replace(/^,/, ''));
-                return parts.length ? '{' + parts.join(',') + '}' : '';
+            function changeSelection() {
+                setStatus('Loading…');
+                for (const chart of Object.values(charts)) applySeries(chart, []);
+                return loadCharts();
             }
-
-            function rateQuery(name, nf, mf) {
-                return `sum(rate(${name}${labelsFrom(nf, mf || '')}[1m]))`;
-            }
-
-            function buildRateQuery(name, nf, mf) {
-                return rateQuery(name, nf, mf);
-            }
-
-            function gaugeQuery(name, nf) {
-                return `${name}${labelsFrom(nf, '')}`;
-            }
-
-            function histQuantile(q, nf, mf) {
-                const sel = labelsFrom(nf, mf);
-                return `histogram_quantile(${q}, sum by (le) (rate(kvengine_request_duration_seconds_bucket${sel}[1m])))`;
-            }
-
-            document.getElementById('refresh').onclick = () => loadCharts();
-            document.getElementById('node').onchange = () => loadCharts();
-            document.getElementById('method').onchange = () => loadCharts();
-            document.getElementById('range').onchange = () => loadCharts();
 
             (async function init() {
-                ensureChart('chart-rps', 'RPS', '#7eb8ff');
-                ensureMulti('chart-lat', [
-                    { label: 'p50', color: '#3dd68c' },
-                    { label: 'p95', color: '#ffcc66' },
-                    { label: 'p99', color: '#f07178' }
-                ]);
-                ensureMulti('chart-hit', [
-                    { label: 'hit', color: '#3dd68c' },
-                    { label: 'miss', color: '#f07178' }
-                ]);
-                ensureChart('chart-offset', 'offset', '#7eb8ff');
-                ensureChart('chart-entries', 'entries', '#ffcc66');
-                ensureChart('chart-go', 'goroutines', '#c3a6ff');
-                await loadNodes();
-                await loadStatus();
-                await loadCharts();
-                setInterval(loadCharts, 15000);
+                try {
+                    if (typeof Chart !== 'function') throw new Error('Chart.js could not load');
+                    ensureChart('chart-rps', 'RPS', '#7eb8ff');
+                    ensureMulti('chart-lat', [
+                        { label: 'p50', color: '#3dd68c' },
+                        { label: 'p95', color: '#ffcc66' },
+                        { label: 'p99', color: '#f07178' }
+                    ]);
+                    ensureMulti('chart-hit', [
+                        { label: 'hit', color: '#3dd68c' },
+                        { label: 'miss', color: '#f07178' }
+                    ]);
+                    ensureChart('chart-offset', 'offset', '#7eb8ff');
+                    ensureChart('chart-entries', 'entries', '#ffcc66');
+                    ensureChart('chart-go', 'goroutines', '#c3a6ff');
+                    await loadReplicas();
+                    if (!replicaSelect.value) {
+                        setStatus('No engine replicas in the manifest', 'err');
+                        return;
+                    }
+                    document.getElementById('refresh').onclick = loadCharts;
+                    for (const selector of [replicaSelect, document.getElementById('method'), document.getElementById('range')]) {
+                        selector.onchange = changeSelection;
+                    }
+                    await loadCharts();
+                    setInterval(loadCharts, 15000);
+                } catch (error) {
+                    setStatus(error.message, 'err');
+                }
             })();
         </script>
     </body>

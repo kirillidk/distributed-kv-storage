@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,8 +38,8 @@ func (c *Client) Configured() bool {
 }
 
 type Point struct {
-	T float64 `json:"t"`
-	V float64 `json:"v"`
+	T float64  `json:"t"`
+	V *float64 `json:"v"`
 }
 
 type Series struct {
@@ -123,7 +124,12 @@ func (c *Client) QueryRange(ctx context.Context, query string, start, end time.T
 			if err != nil {
 				continue
 			}
-			s.Values = append(s.Values, Point{T: ts, V: v})
+			point := Point{T: ts}
+			// Prometheus can return NaN latency quantiles when no requests were observed.
+			if !math.IsNaN(v) && !math.IsInf(v, 0) {
+				point.V = &v
+			}
+			s.Values = append(s.Values, point)
 		}
 		out.Series = append(out.Series, s)
 	}
