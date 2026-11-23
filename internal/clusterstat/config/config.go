@@ -1,40 +1,14 @@
 package config
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/kirillidk/distributed-kv-storage/internal/manifest"
 )
-
-type manifest struct {
-	Nodes []nodeConfig `yaml:"nodes"`
-}
-
-type nodeConfig struct {
-	ID     string       `yaml:"id"`
-	Repl   replConfig   `yaml:"repl"`
-	Engine engineConfig `yaml:"engine"`
-}
-
-type replConfig struct {
-	ListenAddr  string `yaml:"listen_addr"`
-	ConnectAddr string `yaml:"connect_addr"`
-	LogDir      string `yaml:"log_dir"`
-	WALPath     string `yaml:"wal_path"`
-}
-
-type engineConfig struct {
-	ConnectAddr     string   `yaml:"connect_addr"`
-	Command         []string `yaml:"command"`
-	RestartDelay    string   `yaml:"restart_delay"`
-	ShutdownTimeout string   `yaml:"shutdown_timeout"`
-}
 
 type ComponentType string
 
@@ -44,6 +18,7 @@ const (
 )
 
 type Component struct {
+	ShardID string
 	NodeID  string
 	Type    ComponentType
 	Address string
@@ -83,48 +58,17 @@ func LoadArgs(args []string) (*Config, error) {
 		return nil, fmt.Errorf("check-timeout must be positive, got %s", cfg.CheckTimeout)
 	}
 
-	file, err := os.Open(cfg.ManifestPath)
+	topology, err := manifest.Load(cfg.ManifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("open manifest %q: %w", cfg.ManifestPath, err)
+		return nil, err
 	}
-	defer file.Close()
-
-	decoder := yaml.NewDecoder(file)
-	decoder.KnownFields(true)
-	var m manifest
-	if err := decoder.Decode(&m); err != nil {
-		return nil, fmt.Errorf("parse manifest %q: %w", cfg.ManifestPath, err)
+	for _, node := range topology.Nodes {
+		cfg.Components = append(cfg.Components, Component{NodeID: node.ID, Type: TypeRepl, Address: node.Repl.ConnectAddr})
 	}
-	var extra yaml.Node
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, fmt.Errorf("parse manifest %q: multiple YAML documents are not supported", cfg.ManifestPath)
+	for _, shard := range topology.Shards {
+		for _, replica := range shard.Replicas {
+			cfg.Components = append(cfg.Components, Component{NodeID: replica.NodeID, ShardID: shard.ID, Type: TypeKVEngine, Address: replica.Engine.ConnectAddr})
 		}
-		return nil, fmt.Errorf("parse manifest %q: %w", cfg.ManifestPath, err)
-	}
-	if len(m.Nodes) == 0 {
-		return nil, fmt.Errorf("manifest contains no nodes")
-	}
-
-	seenIDs := make(map[string]struct{}, len(m.Nodes))
-	for i, n := range m.Nodes {
-		if strings.TrimSpace(n.ID) == "" {
-			return nil, fmt.Errorf("nodes[%d].id is required", i)
-		}
-		if _, exists := seenIDs[n.ID]; exists {
-			return nil, fmt.Errorf("duplicate node ID %q", n.ID)
-		}
-		seenIDs[n.ID] = struct{}{}
-		if strings.TrimSpace(n.Repl.ConnectAddr) == "" {
-			return nil, fmt.Errorf("nodes[%d].repl.connect_addr is required", i)
-		}
-		if strings.TrimSpace(n.Engine.ConnectAddr) == "" {
-			return nil, fmt.Errorf("nodes[%d].engine.connect_addr is required", i)
-		}
-		cfg.Components = append(cfg.Components,
-			Component{NodeID: n.ID, Type: TypeRepl, Address: n.Repl.ConnectAddr},
-			Component{NodeID: n.ID, Type: TypeKVEngine, Address: n.Engine.ConnectAddr},
-		)
 	}
 
 	return cfg, nil

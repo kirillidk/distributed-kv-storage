@@ -2,6 +2,7 @@ package repl
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/kirillidk/distributed-kv-storage/api/sharding"
 )
 
 var (
@@ -76,6 +79,42 @@ func OpenWAL(path string) (*WAL, error) {
 	return w, nil
 }
 
+// Bind the log to its keyspace before starting Raft. A WAL written before
+// sharding was introduced belongs to the original, single-shard layout.
+func (w *WAL) bindShard(nodeID string, shard sharding.Assignment) error {
+	path := w.file.Name() + ".shard"
+	type binding struct {
+		sharding.Assignment
+		NodeID string `json:"node_id"`
+		Hash   string `json:"hash"`
+	}
+	want := binding{Assignment: shard, NodeID: nodeID, Hash: "crc32-ieee"}
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		var existing binding
+		if json.Unmarshal(data, &existing) == nil && existing == want {
+			return nil
+		}
+		// Upgrade the previous numeric assignment only if it owns the same keyspace.
+		if string(data) != fmt.Sprintf("crc32-ieee %d %d\n", shard.Index, shard.Count) {
+			return fmt.Errorf("WAL assignment in %s differs from cluster %q, shard %q, node %q", path, shard.ClusterID, shard.ShardID, nodeID)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("read WAL shard assignment: %w", err)
+	case shard.Count != 1 && w.LastOffset() != 0:
+		return errors.New("existing single-shard WAL requires data migration before enabling sharding")
+	}
+	data, err = json.Marshal(want)
+	if err != nil {
+		return err
+	}
+	if err := writeStateFile(path, data); err != nil {
+		return fmt.Errorf("persist WAL shard assignment: %w", err)
+	}
+	return nil
+}
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {
@@ -83,6 +122,29 @@ func syncDirectory(path string) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+// Sync each new directory entry in its parent before using it for replica data.
+func ensureDirectory(path string) error {
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%q is not a directory", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	parent := filepath.Dir(path)
+	if err := ensureDirectory(parent); err != nil {
+		return err
+	}
+	if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return syncDirectory(parent)
 }
 
 func (w *WAL) LastOffset() uint64 {

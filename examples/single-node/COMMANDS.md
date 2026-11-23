@@ -56,7 +56,7 @@ docker compose -f examples/single-node/compose.yaml \
 
 ```bash
 docker compose -f examples/single-node/compose.yaml \
-  exec node-1 tail -f /var/log/distributed-kv/node-1/kv-engine.log
+  exec node-1 tail -f /var/log/distributed-kv/node-1/kv-engine.shard-a.log
 ```
 
 ## Clear component log files
@@ -65,7 +65,7 @@ docker compose -f examples/single-node/compose.yaml \
 docker compose -f examples/single-node/compose.yaml \
   exec node-1 truncate -s 0 \
   /var/log/distributed-kv/node-1/repl.log \
-  /var/log/distributed-kv/node-1/kv-engine.log
+  /var/log/distributed-kv/node-1/kv-engine.shard-a.log
 ```
 
 ## Restart engine with SIGTERM

@@ -24,7 +24,10 @@ const (
 type ProposeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Opaque command encoded by the local engine.
-	Payload       []byte `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
+	Payload []byte `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
+	// Select the local replica that owns this log.
+	ClusterId     string `protobuf:"bytes,2,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	ShardId       string `protobuf:"bytes,3,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -64,6 +67,20 @@ func (x *ProposeRequest) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *ProposeRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *ProposeRequest) GetShardId() string {
+	if x != nil {
+		return x.ShardId
+	}
+	return ""
 }
 
 type ProposeResponse struct {
@@ -115,9 +132,12 @@ var File_repl_v1_repl_proto protoreflect.FileDescriptor
 
 const file_repl_v1_repl_proto_rawDesc = "" +
 	"\n" +
-	"\x12repl/v1/repl.proto\x12\arepl.v1\"*\n" +
+	"\x12repl/v1/repl.proto\x12\arepl.v1\"d\n" +
 	"\x0eProposeRequest\x12\x18\n" +
-	"\apayload\x18\x01 \x01(\fR\apayload\")\n" +
+	"\apayload\x18\x01 \x01(\fR\apayload\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x02 \x01(\tR\tclusterId\x12\x19\n" +
+	"\bshard_id\x18\x03 \x01(\tR\ashardId\")\n" +
 	"\x0fProposeResponse\x12\x16\n" +
 	"\x06result\x18\x01 \x01(\fR\x06result2K\n" +
 	"\vReplService\x12<\n" +

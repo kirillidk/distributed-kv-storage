@@ -57,8 +57,12 @@ func saveRaftState(path string, state raftHardState) error {
 	binary.BigEndian.PutUint64(data[16:], state.CommitIndex)
 	copy(data[24:], state.VotedFor)
 	binary.BigEndian.PutUint32(data[len(data)-4:], crc32.ChecksumIEEE(data[:len(data)-4]))
+	return writeStateFile(path, data)
+}
+
+func writeStateFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".raft-state-*")
+	file, err := os.CreateTemp(dir, ".repl-state-*")
 	if err != nil {
 		return err
 	}
@@ -77,7 +81,7 @@ func saveRaftState(path string, state raftHardState) error {
 		return err
 	}
 	if err := syncDirectory(dir); err != nil {
-		return fmt.Errorf("sync Raft state directory: %w", err)
+		return fmt.Errorf("sync state directory: %w", err)
 	}
 	return nil
 }

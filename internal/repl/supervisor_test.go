@@ -15,6 +15,7 @@ import (
 	"time"
 
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/internal/manifest"
 	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -60,20 +61,31 @@ func TestEngineHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func testNode(mode string) NodeConfig {
-	return NodeConfig{
-		ID: "node_0",
-		Repl: ReplConfig{
-			ListenAddr:  "127.0.0.1:0",
-			ConnectAddr: "node-0:7001",
-		},
-		Engine: EngineConfig{
+func testNode(t *testing.T, mode string) *manifest.Manifest {
+	t.Helper()
+	node := manifest.Node{
+		ID:   "node_0",
+		Repl: manifest.Repl{ListenAddr: "127.0.0.1:0", ConnectAddr: "node-0:7001"},
+	}
+	replica := manifest.Replica{
+		NodeID:  node.ID,
+		DataDir: t.TempDir(),
+		Engine: manifest.Engine{
 			ConnectAddr:     "127.0.0.1:1",
 			Command:         []string{os.Args[0], "-test.run=^TestEngineHelperProcess$", "--", mode},
-			RestartDelay:    Duration{50 * time.Millisecond},
-			ShutdownTimeout: Duration{100 * time.Millisecond},
+			RestartDelay:    manifest.Duration{Duration: 50 * time.Millisecond},
+			ShutdownTimeout: manifest.Duration{Duration: 100 * time.Millisecond},
 		},
 	}
+	return &manifest.Manifest{
+		Version: 1, ClusterID: "test",
+		Nodes:  []manifest.Node{node},
+		Shards: []manifest.Shard{{ID: "main", Replicas: []manifest.Replica{replica}}},
+	}
+}
+
+func runTestNode(ctx context.Context, topology *manifest.Manifest, logger *slog.Logger, listener net.Listener) error {
+	return runOnListener(ctx, topology, topology.Nodes[0].ID, logger, listener)
 }
 
 func TestRunServesHealthThroughEngineRestartAndShutdown(t *testing.T) {
@@ -84,10 +96,10 @@ func TestRunServesHealthThroughEngineRestartAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node := testNode("exit")
+	node := testNode(t, "exit")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	go func() { done <- runTestNode(ctx, node, testLogger(), listener) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -136,12 +148,12 @@ func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The helper exits without serving EngineService, so recovery stays pending.
-	node := testNode("exit")
-	node.Repl.WALPath = filepath.Join(dir, "wal")
-	node.Repl.LogDir = filepath.Join(dir, "logs")
+	node := testNode(t, "exit")
+	node.Shards[0].Replicas[0].DataDir = filepath.Join(dir, "data")
+	node.Nodes[0].Repl.LogDir = filepath.Join(dir, "logs")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runOnListener(ctx, node, testLogger(), listener) }()
+	go func() { done <- runTestNode(ctx, node, testLogger(), listener) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -186,10 +198,10 @@ func TestRunServesHealthAndLogsWhileWALRecoveryIsPending(t *testing.T) {
 			t.Errorf("health %q after engine restart = %v, %v", test.service, state, err)
 		}
 	}
-	if _, err := replv1.NewReplServiceClient(conn).Propose(requestCtx, &replv1.ProposeRequest{Payload: []byte("not ready")}); status.Code(err) != codes.Unavailable {
+	if _, err := replv1.NewReplServiceClient(conn).Propose(requestCtx, &replv1.ProposeRequest{ClusterId: "test", ShardId: "main", Payload: []byte("not ready")}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("Propose during recovery: %v", err)
 	}
-	if _, err := raftv1.NewRaftServiceClient(conn).RequestVote(requestCtx, &raftv1.RequestVoteRequest{Term: 1, CandidateId: "outsider"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := raftv1.NewRaftServiceClient(conn).RequestVote(requestCtx, &raftv1.RequestVoteRequest{ClusterId: "test", ShardId: "main", Term: 1, CandidateId: "outsider"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("Raft service unavailable during recovery: %v", err)
 	}
 	page, err := replv1.NewReplAdminServiceClient(conn).ReadLogs(requestCtx, &replv1.ReadLogsRequest{Component: replv1.LogComponent_LOG_COMPONENT_REPL})
@@ -232,7 +244,7 @@ func TestRunRestartsAfterNonzeroExit(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("exit"), testLogger()) }()
+	go func() { done <- runTestNode(ctx, testNode(t, "exit"), testLogger(), nil) }()
 	pids := waitForStarts(t, starts, 2)
 	cancel()
 	if pids[0] == pids[1] {
@@ -256,7 +268,7 @@ func TestRunRestartsAfterZeroExit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("exit-zero"), logger) }()
+	go func() { done <- runTestNode(ctx, testNode(t, "exit-zero"), logger, nil) }()
 	pids := waitForStarts(t, starts, 2)
 	cancel()
 	if pids[0] == pids[1] {
@@ -284,7 +296,7 @@ func TestRunKillsEngineAfterShutdownTimeout(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, testNode("ignore-term"), testLogger()) }()
+	go func() { done <- runTestNode(ctx, testNode(t, "ignore-term"), testLogger(), nil) }()
 	pid := waitForStarts(t, starts, 1)[0]
 	cancel()
 	select {
@@ -309,12 +321,12 @@ func TestRunStopsEngineGracefullyAndLogsOutput(t *testing.T) {
 	t.Setenv("REPL_TEST_STARTS", starts)
 	logs := &lockedBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
-	node := testNode("wait")
+	node := testNode(t, "wait")
 	// A race-instrumented subprocess waits before exiting to flush race reports.
-	node.Engine.ShutdownTimeout = Duration{3 * time.Second}
+	node.Shards[0].Replicas[0].Engine.ShutdownTimeout.Duration = 3 * time.Second
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, node, logger) }()
+	go func() { done <- runTestNode(ctx, node, logger, nil) }()
 	pid := waitForStarts(t, starts, 1)[0]
 	cancel()
 	select {

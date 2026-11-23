@@ -24,36 +24,72 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func buildTestBinary(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	cmd := exec.Command("go", "build", "-o", path, "./cmd/"+name)
+	cmd.Dir = filepath.Join("..", "..")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v\n%s", name, err, out)
+	}
+	return path
+}
+
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().String()
+}
+
+func testConnection(t *testing.T, addr string) *grpc.ClientConn {
+	t.Helper()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and crashes real repl/kv-engine processes")
 	}
 	dir := t.TempDir()
-	for _, name := range []string{"repl", "kv-engine"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
-		cmd.Dir = filepath.Join("..", "..")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("build %s: %v\n%s", name, err, out)
-		}
-	}
-	freeAddress := func() string {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		addr := l.Addr().String()
-		l.Close()
-		return addr
-	}
-	replAddr, engineAddr := freeAddress(), freeAddress()
+	buildTestBinary(t, dir, "repl")
+	buildTestBinary(t, dir, "kv-engine")
+	replAddr, engineAddr := freeAddress(t), freeAddress(t)
 	_, port, err := net.SplitHostPort(engineAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	walPath := filepath.Join(dir, "node.wal")
+	dataDir := filepath.Join(dir, "data")
+	walPath := filepath.Join(dataDir, "wal")
 	logDir := filepath.Join(dir, "component-logs")
 	manifestPath := filepath.Join(dir, "cluster.yaml")
-	manifest := fmt.Sprintf("nodes:\n  - id: smoke\n    repl:\n      listen_addr: %s\n      connect_addr: %s\n      wal_path: %s\n      log_dir: %s\n    engine:\n      connect_addr: %s\n      command: [%s, --port, '%s']\n      restart_delay: 100ms\n      shutdown_timeout: 2s\n", replAddr, replAddr, walPath, logDir, engineAddr, filepath.Join(dir, "kv-engine"), port)
+	manifest := fmt.Sprintf(`version: 1
+cluster_id: smoke
+nodes:
+  - id: smoke
+    repl:
+      listen_addr: %s
+      connect_addr: %s
+      log_dir: %s
+shards:
+  - id: main
+    replicas:
+      - node_id: smoke
+        data_dir: %s
+        engine:
+          connect_addr: %s
+          command: [%s, --port, "%s", --metrics-listen, "127.0.0.1:0"]
+          restart_delay: 100ms
+          shutdown_timeout: 2s
+`, replAddr, replAddr, logDir, dataDir, engineAddr, filepath.Join(dir, "kv-engine"), port)
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -99,15 +135,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		}
 		t.Fatal(message)
 	}
-	connect := func(addr string) *grpc.ClientConn {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close() })
-		return conn
-	}
-	pidPattern := regexp.MustCompile(`msg="engine started" pid=([0-9]+)`)
+	pidPattern := regexp.MustCompile(`msg="engine started"[^\n]*?\bpid=([0-9]+)`)
 	enginePID := func(logPath string, count int) int {
 		var pid int
 		poll("engine was not started", func() bool {
@@ -122,7 +150,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 		return pid
 	}
 	log1 := start("first.log")
-	replConn, engineConn := connect(replAddr), connect(engineAddr)
+	replConn, engineConn := testConnection(t, replAddr), testConnection(t, engineAddr)
 	poll("proposal service never became ready", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
@@ -307,7 +335,7 @@ func TestWALProcessRecoveryBeforeClientRequests(t *testing.T) {
 	<-done
 	active = nil
 	log2 := start("second.log")
-	engineConn = connect(engineAddr)
+	engineConn = testConnection(t, engineAddr)
 	enginePID(log2, 1)
 	waitOffset("repl and engine SIGKILL")
 	verify("repl and engine SIGKILL")

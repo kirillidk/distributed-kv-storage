@@ -13,51 +13,54 @@ import (
 	"syscall"
 	"time"
 
-	enginev1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/engine/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/internal/manifest"
 	raftv1 "github.com/kirillidk/distributed-kv-storage/internal/repl/gen/go/repl/raft/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-// Run serves node health, logs and Raft, and supervises the local engine until
-// ctx is canceled. cluster must include all voters, including the local node.
-// Omitting cluster starts a single-node deployment.
-func Run(ctx context.Context, node NodeConfig, logger *slog.Logger, cluster ...NodeConfig) error {
-	return runOnListener(ctx, node, logger, nil, cluster...)
+// Run serves one gRPC address for the node and supervises every local replica.
+func Run(ctx context.Context, topology *manifest.Manifest, nodeID string, logger *slog.Logger) error {
+	return runOnListener(ctx, topology, nodeID, logger, nil)
 }
 
-func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, listener net.Listener, cluster ...NodeConfig) (runErr error) {
+func runOnListener(ctx context.Context, topology *manifest.Manifest, nodeID string, logger *slog.Logger, listener net.Listener) (runErr error) {
 	if listener != nil {
 		defer listener.Close()
 	}
+	node, err := topology.FindNode(nodeID)
+	if err != nil {
+		return err
+	}
+	local := topology.LocalReplicas(nodeID)
 	var logs *componentLogs
 	var logErrors <-chan error
-	engineLogger := logger
+	console := logger.Handler()
 	if node.Repl.LogDir != "" {
-		var err error
-		logs, err = openComponentLogs(node.Repl.LogDir)
+		ids := make([]string, 0, len(local))
+		for _, replica := range local {
+			ids = append(ids, replica.Shard.ShardID)
+		}
+		logs, err = openComponentLogs(node.Repl.LogDir, ids)
 		if err != nil {
 			return err
 		}
 		defer func() { runErr = errors.Join(runErr, logs.Close()) }()
 		logErrors = logs.errors
-		engineLogger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.engine, nil)})
-		logger = slog.New(teeLogHandler{logger.Handler(), slog.NewJSONHandler(logs.repl, nil)})
+		logger = slog.New(teeLogHandler{console, slog.NewJSONHandler(logs.repl, nil)})
 	}
-	logger.Info("repl starting", "node_id", node.ID, "listen_addr", node.Repl.ListenAddr,
-		"connect_addr", node.Repl.ConnectAddr, "engine_connect_addr", node.Engine.ConnectAddr)
+	logger = logger.With("node_id", nodeID, "cluster_id", topology.ClusterID)
+	logger.Info("repl starting", "listen_addr", node.Repl.ListenAddr, "local_replicas", len(local))
 	defer func() {
 		if runErr != nil {
-			logger.Error("repl failed", "node_id", node.ID, "error", runErr)
+			logger.Error("repl failed", "error", runErr)
 		} else {
-			logger.Info("repl stopped", "node_id", node.ID)
+			logger.Info("repl stopped")
 		}
 	}()
 	if listener == nil {
-		var err error
 		listener, err = net.Listen("tcp", node.Repl.ListenAddr)
 		if err != nil {
 			return fmt.Errorf("listen on repl address %q: %w", node.Repl.ListenAddr, err)
@@ -66,157 +69,96 @@ func runOnListener(ctx context.Context, node NodeConfig, logger *slog.Logger, li
 	}
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	services := &replicaServices{clusterID: topology.ClusterID, replicas: make(map[string]*replicaRuntime, len(local))}
+	// Share the transport to a remote repl across all groups that peer with it.
+	peerConns := make(map[string]*grpc.ClientConn)
+	defer func() {
+		for _, c := range peerConns {
+			runErr = errors.Join(runErr, c.Close())
+		}
+	}()
+	for _, placement := range local {
+		id := placement.Shard.ShardID
+		engineHandler := console
+		if logs != nil {
+			engineHandler = teeLogHandler{console, slog.NewJSONHandler(logs.engines[id], nil)}
+		}
+		replica := &replicaRuntime{
+			placement:    placement,
+			replAddr:     node.Repl.ConnectAddr,
+			logger:       logger.With("shard_id", id),
+			engineLogger: slog.New(engineHandler).With("node_id", nodeID, "shard_id", id),
+		}
+		if err := replica.open(peerConns); err != nil {
+			return fmt.Errorf("open replica of shard %q: %w", id, err)
+		}
+		defer func() { runErr = errors.Join(runErr, replica.close()) }()
+		replica.registerHealth(healthServer, len(local) == 1)
+		services.replicas[id] = replica
+	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxRaftMessageSize))
 	replv1.RegisterReplAdminServiceServer(server, &replAdminServer{logs: logs})
-	var proposals *proposalServer
-	var raft *raftNode
-	if node.Repl.WALPath != "" {
-		wal, err := OpenWAL(node.Repl.WALPath)
-		if err != nil {
-			return err
-		}
-		defer wal.Close()
-		conn, err := grpc.NewClient(node.Engine.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return fmt.Errorf("create engine client: %w", err)
-		}
-		defer conn.Close()
-		if len(cluster) == 0 {
-			cluster = []NodeConfig{node}
-		}
-		peers := make(map[string]raftv1.RaftServiceClient, len(cluster)-1)
-		seen := make(map[string]bool, len(cluster))
-		for _, peer := range cluster {
-			if peer.ID == "" || seen[peer.ID] || peer.Repl.WALPath == "" {
-				return errors.New("Raft requires unique node IDs and a WAL on every node")
-			}
-			seen[peer.ID] = true
-			if peer.ID == node.ID {
-				continue
-			}
-			peerConn, err := grpc.NewClient(peer.Repl.ConnectAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-			if err != nil {
-				return fmt.Errorf("create Raft peer %q: %w", peer.ID, err)
-			}
-			defer peerConn.Close()
-			peers[peer.ID] = raftv1.NewRaftServiceClient(peerConn)
-		}
-		if !seen[node.ID] {
-			return errors.New("local Raft node is missing from the cluster")
-		}
-		raft, err = newRaftNode(node.ID, peers, wal, node.Repl.WALPath+".raft-state", defaultRaftTiming, logger)
-		if err != nil {
-			return err
-		}
-		raftv1.RegisterRaftServiceServer(server, raft)
-		healthServer.SetServingStatus(raftv1.RaftService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
-		healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_NOT_SERVING)
-		var readyMu sync.Mutex
-		var engineReady, leaderReady bool
-		updateReady := func() {
-			state := healthpb.HealthCheckResponse_NOT_SERVING
-			if engineReady && leaderReady {
-				state = healthpb.HealthCheckResponse_SERVING
-			}
-			healthServer.SetServingStatus(replv1.ReplService_ServiceDesc.ServiceName, state)
-		}
-		raft.onLeaderChange = func(ready bool) {
-			readyMu.Lock()
-			defer readyMu.Unlock()
-			leaderReady = ready
-			updateReady()
-		}
-		proposals = &proposalServer{
-			wal: wal, raft: raft, engine: enginev1.NewEngineServiceClient(conn),
-			setReady: func(ready bool) {
-				readyMu.Lock()
-				defer readyMu.Unlock()
-				engineReady = ready
-				updateReady()
-			},
-		}
-		replv1.RegisterReplServiceServer(server, proposals)
-	}
+	replv1.RegisterReplServiceServer(server, services)
+	raftv1.RegisterRaftServiceServer(server, services)
 	healthpb.RegisterHealthServer(server, healthServer)
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
-	raftCtx, stopRaft := context.WithCancel(ctx)
-	defer stopRaft()
-	var raftDone chan error
-	if raft != nil {
-		raftDone = make(chan error, 1)
-		go func() { raftDone <- raft.run(raftCtx) }()
+	nodeCtx, stop := context.WithCancel(ctx)
+	replicaErrors := make(chan error, len(local))
+	var workers sync.WaitGroup
+	for _, replica := range services.replicas {
+		workers.Go(func() {
+			if err := replica.run(nodeCtx); err != nil {
+				replicaErrors <- err
+			}
+		})
 	}
-
-	supervisorCtx, stopSupervisor := context.WithCancel(ctx)
-	supervisorDone := make(chan error, 1)
-	go func() { supervisorDone <- supervise(supervisorCtx, node, logger, engineLogger, proposals) }()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	logger.Info("repl health serving", "address", listener.Addr().String())
-
-	supervisorFinished := false
-	serverFinished := false
-	raftFinished := false
-	select {
-	case <-ctx.Done():
-	case runErr = <-supervisorDone:
-		supervisorFinished = true
-	case runErr = <-logErrors:
-	case runErr = <-raftDone:
-		raftFinished = true
-	case err := <-serveDone:
-		serverFinished = true
-		if ctx.Err() == nil {
-			if err == nil {
-				runErr = errors.New("repl health server stopped unexpectedly")
-			} else {
-				runErr = fmt.Errorf("serve repl health: %w", err)
+	active := len(local)
+	var failedReplicas error
+	for {
+		select {
+		case <-ctx.Done():
+		case runErr = <-logErrors:
+		case err := <-serveDone:
+			if ctx.Err() == nil {
+				runErr = fmt.Errorf("repl gRPC server stopped: %v", err)
 			}
+		case err := <-replicaErrors:
+			failedReplicas = errors.Join(failedReplicas, err)
+			active--
+			if active > 0 {
+				continue
+			}
+			runErr = failedReplicas
 		}
+		break
 	}
-
 	healthServer.Shutdown()
-	stopRaft()
-	stopSupervisor()
-	if raftDone != nil && !raftFinished {
-		if err := <-raftDone; runErr == nil {
-			runErr = err
-		}
-	}
-	if !supervisorFinished {
-		if err := <-supervisorDone; runErr == nil {
-			runErr = err
-		}
-	}
-	gracefulDone := make(chan struct{})
-	go func() {
-		server.GracefulStop()
-		close(gracefulDone)
-	}()
-	select {
-	case <-gracefulDone:
-	case <-time.After(250 * time.Millisecond):
-		server.Stop()
-		<-gracefulDone
-	}
-	if !serverFinished {
-		if err := <-serveDone; err != nil && runErr == nil && ctx.Err() == nil {
-			runErr = fmt.Errorf("serve repl health: %w", err)
-		}
-	}
+	stop()
+	workers.Wait()
+	// Active streams may outlive the node. Bound the drain before closing WALs.
+	timer := time.AfterFunc(250*time.Millisecond, server.Stop)
+	server.GracefulStop()
+	timer.Stop()
 	return runErr
 }
 
-func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.Logger, proposals *proposalServer) error {
-	engine := node.Engine
+func (r *replicaRuntime) supervise(ctx context.Context) {
+	engine, proposals := r.placement.Engine, r.proposals
+	logger, engineLogger := r.logger, r.engineLogger
 	for ctx.Err() == nil {
-		if proposals != nil {
-			proposals.unavailable()
-		}
+		proposals.unavailable()
 		cmd := exec.Command(engine.Command[0], engine.Command[1:]...)
-		if proposals != nil {
-			cmd.Env = append(os.Environ(), "REPL_CONNECT_ADDR="+node.Repl.ConnectAddr)
-		}
+		shard := r.placement.Shard
+		cmd.Env = append(os.Environ(),
+			"REPL_CONNECT_ADDR="+r.replAddr,
+			"KV_CLUSTER_ID="+shard.ClusterID,
+			"KV_SHARD_ID="+shard.ShardID,
+			fmt.Sprintf("KV_SHARD_INDEX=%d", shard.Index),
+			fmt.Sprintf("KV_SHARD_COUNT=%d", shard.Count),
+		)
 		stdout := &engineLogWriter{logger: engineLogger, stream: "stdout"}
 		stderr := &engineLogWriter{logger: engineLogger, stream: "stderr"}
 		cmd.Stdout = stdout
@@ -239,9 +181,7 @@ func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.
 			recoveryDone := make(chan struct{})
 			go func() {
 				defer close(recoveryDone)
-				if proposals != nil {
-					proposals.recoverEngine(healthCtx, logger)
-				}
+				proposals.recoverEngine(healthCtx, logger)
 			}()
 
 			select {
@@ -249,9 +189,7 @@ func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.
 				stopHealth()
 				<-healthDone
 				<-recoveryDone
-				if proposals != nil {
-					proposals.unavailable()
-				}
+				proposals.unavailable()
 				stdout.close()
 				stderr.close()
 				logEngineExit(logger, cmd.Process.Pid, err)
@@ -260,28 +198,25 @@ func supervise(ctx context.Context, node NodeConfig, logger, engineLogger *slog.
 				shutdownEngine(cmd, waitCh, engine.ShutdownTimeout.Duration, logger)
 				<-healthDone
 				<-recoveryDone
-				if proposals != nil {
-					proposals.unavailable()
-				}
+				proposals.unavailable()
 				stdout.close()
 				stderr.close()
-				return nil
+				return
 			}
 		}
 
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
 		logger.Info("engine restart scheduled", "delay", engine.RestartDelay.Duration)
 		timer := time.NewTimer(engine.RestartDelay.Duration)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return
 		case <-timer.C:
 		}
 	}
-	return nil
 }
 
 func shutdownEngine(cmd *exec.Cmd, waitCh <-chan error, timeout time.Duration, logger *slog.Logger) {

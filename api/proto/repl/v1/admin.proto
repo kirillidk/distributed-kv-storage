@@ -24,6 +24,8 @@ message ReadLogsRequest {
 
   // Maximum bytes to return. Zero defaults to 64 KiB; the maximum is 1 MiB.
   uint32 max_bytes = 3;
+  // Selects an engine on this node. Optional for a node with one engine.
+  string shard_id = 4;
 }
 
 message ReadLogsResponse {

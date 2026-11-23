@@ -11,6 +11,9 @@ service ReplService {
 message ProposeRequest {
   // Opaque command encoded by the local engine.
   bytes payload = 1;
+  // Select the local replica that owns this log.
+  string cluster_id = 2;
+  string shard_id = 3;
 }
 
 message ProposeResponse {
