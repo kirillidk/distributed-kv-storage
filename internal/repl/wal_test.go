@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/kirillidk/distributed-kv-storage/api/sharding"
+	"github.com/stretchr/testify/require"
 )
 
 func openTestWAL(t *testing.T, path string) *WAL {
@@ -29,6 +32,43 @@ func appendTestWAL(t *testing.T, w *WAL, payload []byte) uint64 {
 		t.Fatal(err)
 	}
 	return offset
+}
+
+func TestWALShardAssignmentSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal")
+	w := openTestWAL(t, path)
+	shard := sharding.Assignment{ClusterID: "demo", ShardID: "b", Index: 1, Count: 2}
+	require.NoError(t, w.bindShard("node-1", shard))
+	appendTestWAL(t, w, []byte("data"))
+	w.Close()
+	w = openTestWAL(t, path)
+	require.Error(t, w.bindShard("node-2", shard))
+	for _, change := range []func(*sharding.Assignment){
+		func(s *sharding.Assignment) { s.ClusterID = "other" }, func(s *sharding.Assignment) { s.ShardID = "a" },
+		func(s *sharding.Assignment) { s.Index = 0 }, func(s *sharding.Assignment) { s.Count = 3 },
+	} {
+		other := shard
+		change(&other)
+		require.Error(t, w.bindShard("node-1", other))
+	}
+	require.NoError(t, w.bindShard("node-1", shard))
+}
+
+func TestLegacyWALBindingUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal")
+	w := openTestWAL(t, path)
+	appendTestWAL(t, w, []byte("data"))
+	s := sharding.Assignment{ClusterID: "demo", ShardID: "b", Index: 1, Count: 2}
+	require.Error(t, w.bindShard("node-1", s))
+	require.NoError(t, os.WriteFile(path+".shard", []byte("crc32-ieee 0 2\n"), 0600))
+	require.Error(t, w.bindShard("node-1", s))
+	require.NoError(t, os.WriteFile(path+".shard", []byte("crc32-ieee 1 2\n"), 0600))
+	require.NoError(t, w.bindShard("node-1", s))
+	s.ShardID = "c"
+	require.Error(t, w.bindShard("node-1", s))
+	legacy := openTestWAL(t, filepath.Join(t.TempDir(), "legacy"))
+	appendTestWAL(t, legacy, []byte("data"))
+	require.NoError(t, legacy.bindShard("node-1", sharding.Assignment{ClusterID: "demo", ShardID: "main", Count: 1}))
 }
 
 func TestWALFormatAndReopen(t *testing.T) {

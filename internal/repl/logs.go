@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,31 +25,36 @@ var errLogOffset = errors.New("log offset is past the end of the file")
 
 // componentLogs owns diagnostic logs, independently of the replication WAL.
 type componentLogs struct {
-	repl   *logFile
-	engine *logFile
-	errors chan error
+	repl    *logFile
+	engines map[string]*logFile
+	errors  chan error
 }
 
-func openComponentLogs(dir string) (*componentLogs, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+func openComponentLogs(dir string, shardIDs []string) (*componentLogs, error) {
+	if err := ensureDirectory(dir); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
-	logs := &componentLogs{errors: make(chan error, 1)}
+	logs := &componentLogs{errors: make(chan error, 1), engines: make(map[string]*logFile)}
 	var err error
 	logs.repl, err = openLogFile(filepath.Join(dir, "repl.log"), logs.errors)
 	if err != nil {
 		return nil, err
 	}
-	logs.engine, err = openLogFile(filepath.Join(dir, "kv-engine.log"), logs.errors)
-	if err != nil {
-		logs.repl.Close()
-		return nil, err
+	for _, id := range shardIDs {
+		file, err := openLogFile(filepath.Join(dir, "kv-engine."+url.PathEscape(id)+".log"), logs.errors)
+		if err != nil {
+			return nil, errors.Join(err, logs.Close())
+		}
+		logs.engines[id] = file
 	}
 	return logs, nil
 }
 
 func (l *componentLogs) Close() error {
-	err := errors.Join(l.repl.Close(), l.engine.Close())
+	err := l.repl.Close()
+	for _, file := range l.engines {
+		err = errors.Join(err, file.Close())
+	}
 	// Include failures from the final shutdown messages as well: the main
 	// supervisor select may already have finished when those are written.
 	select {
@@ -184,7 +190,19 @@ func (s *replAdminServer) ReadLogs(ctx context.Context, in *replv1.ReadLogsReque
 	}
 	file := s.logs.repl
 	if in.Component == replv1.LogComponent_LOG_COMPONENT_KV_ENGINE {
-		file = s.logs.engine
+		switch {
+		case in.ShardId != "":
+			file = s.logs.engines[in.ShardId]
+			if file == nil {
+				return nil, status.Errorf(codes.NotFound, "no local engine for shard %q", in.ShardId)
+			}
+		case len(s.logs.engines) == 1:
+			for _, engine := range s.logs.engines {
+				file = engine
+			}
+		default:
+			return nil, status.Error(codes.InvalidArgument, "shard_id is required to select an engine")
+		}
 	}
 	data, next, eof, err := file.read(in.Offset, maxBytes)
 	if errors.Is(err, errLogOffset) {

@@ -48,11 +48,13 @@ type raftStatus struct {
 
 // raftNode implements elections, log replication and quorum commit. All state transitions
 // and WAL appends are serialized by mu; network calls never hold that lock.
-// Membership is static and includes every node in the manifest, even offline ones.
+// Membership is static and includes every node of this shard, even offline ones.
 type raftNode struct {
 	raftv1.UnimplementedRaftServiceServer
 	mu             sync.Mutex
 	id             string
+	clusterID      string
+	shardID        string
 	peers          map[string]raftv1.RaftServiceClient
 	wal            *WAL
 	statePath      string
@@ -148,7 +150,7 @@ func (r *raftNode) resetElectionLocked() {
 func (r *raftNode) roleLocked(role raftRole, leaderID string) {
 	wasLeader := r.role == leader
 	if r.role != role || r.leaderID != leaderID {
-		r.logger.Info("raft role changed", "node_id", r.id, "role", role, "term", r.hard.Term, "leader_id", leaderID)
+		r.logger.Info("raft role changed", "role", role, "term", r.hard.Term, "leader_id", leaderID)
 	}
 	r.role, r.leaderID = role, leaderID
 	r.notifyChangedLocked()
@@ -324,7 +326,10 @@ func (r *raftNode) startElectionLocked(ctx context.Context) {
 		return
 	}
 	index, term := r.wal.LastEntry()
-	request := &raftv1.RequestVoteRequest{Term: r.hard.Term, CandidateId: r.id, LastLogIndex: index, LastLogTerm: term}
+	request := &raftv1.RequestVoteRequest{
+		ClusterId: r.clusterID, ShardId: r.shardID, Term: r.hard.Term,
+		CandidateId: r.id, LastLogIndex: index, LastLogTerm: term,
+	}
 	for id, peer := range r.peers {
 		r.workers.Add(1)
 		go func() {

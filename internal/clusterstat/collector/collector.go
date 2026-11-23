@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ const (
 const maxLogEntries = 200
 
 type ComponentState struct {
+	ShardID   string
 	NodeID    string
 	Type      config.ComponentType
 	Address   string
@@ -52,11 +54,11 @@ type Collector struct {
 type componentKey struct {
 	nodeID  string
 	typeID  config.ComponentType
-	address string
+	shardID string
 }
 
 func keyFor(comp config.Component) componentKey {
-	return componentKey{nodeID: comp.NodeID, typeID: comp.Type, address: comp.Address}
+	return componentKey{nodeID: comp.NodeID, typeID: comp.Type, shardID: comp.ShardID}
 }
 
 func New(components []config.Component, pollInterval, checkTimeout time.Duration) *Collector {
@@ -70,6 +72,7 @@ func New(components []config.Component, pollInterval, checkTimeout time.Duration
 	for _, comp := range components {
 		c.states[keyFor(comp)] = &ComponentState{
 			NodeID:  comp.NodeID,
+			ShardID: comp.ShardID,
 			Type:    comp.Type,
 			Address: comp.Address,
 			Status:  StatusUnknown,
@@ -90,29 +93,42 @@ func (c *Collector) Snapshot() []ComponentState {
 	return out
 }
 
-func (c *Collector) Lookup(nodeID string, typ config.ComponentType) (ComponentState, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for k, s := range c.states {
+// An unqualified engine URL is unambiguous only on a node with one engine.
+func (c *Collector) findLocked(nodeID string, typ config.ComponentType, shardID string) (componentKey, bool) {
+	key := componentKey{nodeID: nodeID, typeID: typ, shardID: shardID}
+	if _, ok := c.states[key]; ok || shardID != "" {
+		return key, ok
+	}
+	found := false
+	for k := range c.states {
 		if k.nodeID == nodeID && k.typeID == typ {
-			return *s, true
+			if found {
+				return componentKey{}, false
+			}
+			key, found = k, true
 		}
 	}
-	return ComponentState{}, false
+	return key, found
 }
 
-func (c *Collector) Logs(nodeID string, typ config.ComponentType) ([]LogEntry, ComponentState, bool) {
+func (c *Collector) Lookup(nodeID string, typ config.ComponentType, shardID string) (ComponentState, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	for k, s := range c.states {
-		if k.nodeID == nodeID && k.typeID == typ {
-			src := c.logs[k]
-			out := make([]LogEntry, len(src))
-			copy(out, src)
-			return out, *s, true
-		}
+	k, ok := c.findLocked(nodeID, typ, shardID)
+	if !ok {
+		return ComponentState{}, false
 	}
-	return nil, ComponentState{}, false
+	return *c.states[k], true
+}
+
+func (c *Collector) Logs(nodeID string, typ config.ComponentType, shardID string) ([]LogEntry, ComponentState, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	k, ok := c.findLocked(nodeID, typ, shardID)
+	if !ok {
+		return nil, ComponentState{}, false
+	}
+	return slices.Clone(c.logs[k]), *c.states[k], true
 }
 
 func (c *Collector) Run(ctx context.Context) {

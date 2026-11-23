@@ -52,7 +52,7 @@ type Result struct {
 	ReplAddr   string
 }
 
-func (c *Client) ReadPage(ctx context.Context, nodeID string, typ config.ComponentType, offset uint64, maxTotal int) (*Result, error) {
+func (c *Client) ReadPage(ctx context.Context, nodeID string, typ config.ComponentType, shardID string, offset uint64, maxTotal int) (*Result, error) {
 	addr, ok := c.replAddr[nodeID]
 	if !ok {
 		return nil, fmt.Errorf("no repl address for node %q", nodeID)
@@ -80,6 +80,7 @@ func (c *Client) ReadPage(ctx context.Context, nodeID string, typ config.Compone
 		reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 		resp, err := cli.ReadLogs(reqCtx, &replv1.ReadLogsRequest{
 			Component: comp,
+			ShardId:   shardID,
 			Offset:    offset,
 			MaxBytes:  uint32(maxBytes),
 		})

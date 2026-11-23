@@ -4,8 +4,10 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strconv"
 
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
+	"github.com/kirillidk/distributed-kv-storage/api/sharding"
 	kvengine "github.com/kirillidk/distributed-kv-storage/internal/kv-engine"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,6 +30,26 @@ func main() {
 		defer conn.Close()
 		proposer = replv1.NewReplServiceClient(conn)
 	}
-	server := kvengine.CreateServerWithProposer(kvengine.CreateMemoryStorage(), proposer)
+	server, err := kvengine.CreateShardServer(kvengine.CreateMemoryStorage(), proposer, sharding.Assignment{
+		ClusterID: os.Getenv("KV_CLUSTER_ID"),
+		ShardID:   os.Getenv("KV_SHARD_ID"),
+		Index:     shardSetting("KV_SHARD_INDEX", 0),
+		Count:     shardSetting("KV_SHARD_COUNT", 1),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	server.RunServer(*port, *metricsAddr)
+}
+
+func shardSetting(name string, fallback uint32) uint32 {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	n, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		log.Fatalf("invalid %s: %v", name, err)
+	}
+	return uint32(n)
 }

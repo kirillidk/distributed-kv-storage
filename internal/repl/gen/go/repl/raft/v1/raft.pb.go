@@ -28,6 +28,8 @@ type RequestVoteRequest struct {
 	// Raft indexes count records, independently of engine byte offsets.
 	LastLogIndex  uint64 `protobuf:"varint,3,opt,name=last_log_index,json=lastLogIndex,proto3" json:"last_log_index,omitempty"`
 	LastLogTerm   uint64 `protobuf:"varint,4,opt,name=last_log_term,json=lastLogTerm,proto3" json:"last_log_term,omitempty"`
+	ClusterId     string `protobuf:"bytes,5,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	ShardId       string `protobuf:"bytes,6,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -88,6 +90,20 @@ func (x *RequestVoteRequest) GetLastLogTerm() uint64 {
 		return x.LastLogTerm
 	}
 	return 0
+}
+
+func (x *RequestVoteRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *RequestVoteRequest) GetShardId() string {
+	if x != nil {
+		return x.ShardId
+	}
+	return ""
 }
 
 type RequestVoteResponse struct {
@@ -204,6 +220,8 @@ type AppendEntriesRequest struct {
 	Entries []*LogEntry `protobuf:"bytes,5,rep,name=entries,proto3" json:"entries,omitempty"`
 	// Committed Raft record index, not an engine byte offset.
 	LeaderCommit  uint64 `protobuf:"varint,6,opt,name=leader_commit,json=leaderCommit,proto3" json:"leader_commit,omitempty"`
+	ClusterId     string `protobuf:"bytes,7,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	ShardId       string `protobuf:"bytes,8,opt,name=shard_id,json=shardId,proto3" json:"shard_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -280,6 +298,20 @@ func (x *AppendEntriesRequest) GetLeaderCommit() uint64 {
 	return 0
 }
 
+func (x *AppendEntriesRequest) GetClusterId() string {
+	if x != nil {
+		return x.ClusterId
+	}
+	return ""
+}
+
+func (x *AppendEntriesRequest) GetShardId() string {
+	if x != nil {
+		return x.ShardId
+	}
+	return ""
+}
+
 type AppendEntriesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Term  uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
@@ -337,25 +369,31 @@ var File_repl_raft_v1_raft_proto protoreflect.FileDescriptor
 
 const file_repl_raft_v1_raft_proto_rawDesc = "" +
 	"\n" +
-	"\x17repl/raft/v1/raft.proto\x12\frepl.raft.v1\"\x95\x01\n" +
+	"\x17repl/raft/v1/raft.proto\x12\frepl.raft.v1\"\xcf\x01\n" +
 	"\x12RequestVoteRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12!\n" +
 	"\fcandidate_id\x18\x02 \x01(\tR\vcandidateId\x12$\n" +
 	"\x0elast_log_index\x18\x03 \x01(\x04R\flastLogIndex\x12\"\n" +
-	"\rlast_log_term\x18\x04 \x01(\x04R\vlastLogTerm\"L\n" +
+	"\rlast_log_term\x18\x04 \x01(\x04R\vlastLogTerm\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\x05 \x01(\tR\tclusterId\x12\x19\n" +
+	"\bshard_id\x18\x06 \x01(\tR\ashardId\"L\n" +
 	"\x13RequestVoteResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12!\n" +
 	"\fvote_granted\x18\x02 \x01(\bR\vvoteGranted\"8\n" +
 	"\bLogEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x18\n" +
-	"\apayload\x18\x02 \x01(\fR\apayload\"\xe8\x01\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"\xa2\x02\n" +
 	"\x14AppendEntriesRequest\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
 	"\tleader_id\x18\x02 \x01(\tR\bleaderId\x12$\n" +
 	"\x0eprev_log_index\x18\x03 \x01(\x04R\fprevLogIndex\x12\"\n" +
 	"\rprev_log_term\x18\x04 \x01(\x04R\vprevLogTerm\x120\n" +
 	"\aentries\x18\x05 \x03(\v2\x16.repl.raft.v1.LogEntryR\aentries\x12#\n" +
-	"\rleader_commit\x18\x06 \x01(\x04R\fleaderCommit\"E\n" +
+	"\rleader_commit\x18\x06 \x01(\x04R\fleaderCommit\x12\x1d\n" +
+	"\n" +
+	"cluster_id\x18\a \x01(\tR\tclusterId\x12\x19\n" +
+	"\bshard_id\x18\b \x01(\tR\ashardId\"E\n" +
 	"\x15AppendEntriesResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess2\xbb\x01\n" +

@@ -17,6 +17,7 @@ import (
 	kvv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/kv/v1"
 	replv1 "github.com/kirillidk/distributed-kv-storage/api/gen/go/repl/v1"
 	"github.com/kirillidk/distributed-kv-storage/api/replication"
+	"github.com/kirillidk/distributed-kv-storage/api/sharding"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -28,6 +29,7 @@ type server struct {
 	kvv1.UnimplementedKVServiceServer
 	enginev1.UnimplementedEngineServiceServer
 	storage       Storage
+	shard         sharding.Assignment
 	timeSource    TimeSource
 	appliedOffset uint64
 	appliedResult []byte
@@ -53,12 +55,6 @@ func convertError(e error) *status.Status {
 	}
 }
 
-func (s *server) Error(method string, code codes.Code, msg string) error {
-	s.metrics.logError(method, code)
-	err := status.Error(code, msg)
-	return err
-}
-
 func (s *server) ErrorS(method string, st *status.Status) error {
 	s.metrics.logError(method, st.Code())
 	err := st.Err()
@@ -78,8 +74,8 @@ func (s *server) Set(ctx context.Context, in *kvv1.SetRequest) (*kvv1.SetRespons
 func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse, error) {
 	timer := s.metrics.requestTimer("Get")
 	defer timer.ObserveDuration()
-	if !s.isReady() {
-		return nil, s.Error("Get", codes.Unavailable, "engine recovery is in progress")
+	if st := s.checkRequestKey(in.Key); st != nil {
+		return nil, s.ErrorS("Get", st)
 	}
 	value, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
@@ -96,8 +92,8 @@ func (s *server) Get(_ context.Context, in *kvv1.GetRequest) (*kvv1.GetResponse,
 func (s *server) GetExpireTime(_ context.Context, in *kvv1.GetExpireTimeRequest) (*kvv1.GetExpireTimeResponse, error) {
 	timer := s.metrics.requestTimer("GetExpireTime")
 	defer timer.ObserveDuration()
-	if !s.isReady() {
-		return nil, s.Error("GetExpireTime", codes.Unavailable, "engine recovery is in progress")
+	if st := s.checkRequestKey(in.Key); st != nil {
+		return nil, s.ErrorS("GetExpireTime", st)
 	}
 	_, expiresAt, err := s.storage.Get(string(in.Key))
 	if err != nil {
@@ -178,12 +174,26 @@ func (s *server) mutateValue(ctx context.Context, kind uint32, key, value []byte
 	return s.mutate(ctx, mutation{kind: kind, key: key, value: value, now: now, expiresAt: expiresAt})
 }
 
-func (s *server) mutate(ctx context.Context, cmd mutation) (mutationResult, *status.Status) {
+func (s *server) checkRequestKey(key []byte) *status.Status {
 	if !s.isReady() {
-		return mutationResult{}, status.New(codes.Unavailable, "engine recovery is in progress")
+		return status.New(codes.Unavailable, "engine recovery is in progress")
 	}
-	if len(cmd.key) == 0 {
-		return mutationResult{}, convertError(ErrEmptyKey)
+	if len(key) == 0 {
+		return convertError(ErrEmptyKey)
+	}
+	return s.checkShard(key)
+}
+
+func (s *server) checkShard(key []byte) *status.Status {
+	if owner := sharding.ForKey(key, s.shard.Count); owner != s.shard.Index {
+		return status.Newf(codes.FailedPrecondition, "key belongs to shard index %d, local shard %q has index %d", owner, s.shard.ShardID, s.shard.Index)
+	}
+	return nil
+}
+
+func (s *server) mutate(ctx context.Context, cmd mutation) (mutationResult, *status.Status) {
+	if st := s.checkRequestKey(cmd.key); st != nil {
+		return mutationResult{}, st
 	}
 	if err := ctx.Err(); err != nil {
 		return mutationResult{}, status.FromContextError(err)
@@ -195,7 +205,11 @@ func (s *server) mutate(ctx context.Context, cmd mutation) (mutationResult, *sta
 	var result mutationResult
 	if s.proposer != nil {
 		// Apply calls back into this server: never hold its lock during Propose.
-		resp, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{Payload: payload})
+		resp, err := s.proposer.Propose(ctx, &replv1.ProposeRequest{
+			ClusterId: s.shard.ClusterID,
+			ShardId:   s.shard.ShardID,
+			Payload:   payload,
+		})
 		if err != nil {
 			return result, status.Convert(err)
 		}
@@ -272,6 +286,9 @@ func (s *server) Apply(ctx context.Context, in *enginev1.ApplyRequest) (*enginev
 	cmd, err := decodeMutation(in.Payload)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if st := s.checkShard(cmd.key); st != nil {
+		return nil, st.Err()
 	}
 	result, err := encodeMutationResult(s.applyMutation(cmd))
 	if err != nil {
@@ -391,7 +408,7 @@ func expiresAtFromTTL(ttl, now uint64) (uint64, error) {
 }
 
 func newServer(storage Storage, timeSource TimeSource) *server {
-	s := &server{storage: storage, timeSource: timeSource, ready: true, health: health.NewServer(), metrics: newMetrics()}
+	s := &server{storage: storage, shard: sharding.Assignment{Count: 1}, timeSource: timeSource, ready: true, health: health.NewServer(), metrics: newMetrics()}
 	s.health.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
 	s.metrics.setReadiness(true)
 	s.metrics.entriesCount.Set(float64(storage.EntryCount()))
@@ -411,4 +428,16 @@ func CreateServerWithProposer(storage Storage, proposer replv1.ReplServiceClient
 		s.metrics.setReadiness(false)
 	}
 	return s
+}
+
+func CreateShardServer(storage Storage, proposer replv1.ReplServiceClient, shard sharding.Assignment) (*server, error) {
+	if proposer != nil && (shard.ClusterID == "" || shard.ShardID == "") {
+		return nil, errors.New("KV_CLUSTER_ID and KV_SHARD_ID are required for replication")
+	}
+	if shard.Count == 0 || shard.Index >= shard.Count {
+		return nil, fmt.Errorf("shard index %d is outside [0, %d)", shard.Index, shard.Count)
+	}
+	s := CreateServerWithProposer(storage, proposer)
+	s.shard = shard
+	return s, nil
 }
